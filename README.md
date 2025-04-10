@@ -79,6 +79,47 @@ const banner = await mcp_cursor10x_generateBanner({});
 // }
 ```
 
+#### `mcp_cursor10x_initConversation`
+
+Initializes a conversation by storing the user message, generating a banner, and retrieving context in one operation. This unified tool replaces the need for separate generateBanner, getComprehensiveContext, and storeUserMessage calls at the beginning of each conversation.
+
+**Parameters:**
+- `content` (string, required): Content of the user message
+- `importance` (string, optional): Importance level ("low", "medium", "high", "critical"), defaults to "low"
+- `metadata` (object, optional): Additional metadata for the message
+
+**Returns:**
+- Object with two sections:
+  - `display`: Contains the banner to be shown to the user
+  - `internal`: Contains the comprehensive context for the agent's use
+
+**Example:**
+```javascript
+// Initialize a conversation
+const result = await mcp_cursor10x_initConversation({
+  content: "I need to implement a login system for my app",
+  importance: "medium"
+});
+// Result: {
+//   "status": "ok",
+//   "display": {
+//     "banner": {
+//       "status": "ok",
+//       "memory_system": "active",
+//       "mode": "turso",
+//       "message_count": 42,
+//       "active_files_count": 3,
+//       "last_accessed": "4/15/2023, 2:30:45 PM"
+//     }
+//   },
+//   "internal": {
+//     "context": { ... comprehensive context data ... },
+//     "messageStored": true,
+//     "timestamp": 1681567845123
+//   }
+// }
+```
+
 #### `mcp_cursor10x_checkHealth`
 
 Checks the health of the memory system and its database connection.
@@ -509,20 +550,20 @@ The memory system uses Turso (LibSQL) for database storage. To set up your Turso
    Sign up at [Turso.tech](https://turso.tech) if you don't have an account.
 
 2. **Install the Turso CLI**
-   
-   ```bash
+
+```bash
    curl -sSfL https://get.turso.tech/install.sh | bash
-   ```
+```
 
 3. **Login to Turso**
-   
-   ```bash
+
+```bash
    turso auth login
-   ```
+```
 
 4. **Create a database**
-   
-   ```bash
+
+```bash
    turso db create cursor10x-mcp
    ```
 
@@ -597,7 +638,7 @@ If you want to work on cursor10x-mcp development:
    ```
 
 2. **Install dependencies**
-   ```bash
+```bash
    npm install
    ```
 
@@ -608,9 +649,9 @@ If you want to work on cursor10x-mcp development:
    ```
 
 4. **Run in development mode**
-   ```bash
-   npm run dev
-   ```
+```bash
+npm run dev
+```
 
 5. **Build and publish to npm**
    ```bash
@@ -709,167 +750,50 @@ The memory system automatically creates and maintains the following database tab
   - `importance`: Importance level
   - `context`: Action context
 
-## Usage Examples
+## Example Workflows
 
-### Starting a New Session
+### Optimized Conversation Start
 
 ```javascript
-// At the beginning of a conversation, generate a banner and get context
-async function startSession() {
-  // Generate a memory banner to display status
-  const banner = await mcp_cursor10x_generateBanner({});
-  console.log("Memory System Status:", banner);
-  
-  // Get comprehensive context from all memory systems
-  const context = await mcp_cursor10x_getComprehensiveContext({});
-  console.log("Current Context:", context);
-  
-  // Check system health
-  const health = await mcp_cursor10x_checkHealth({});
-  console.log("System Health:", health);
-}
+// Initialize conversation with a single tool call
+// This replaces the need for three separate calls at the start of the conversation
+const result = await mcp_cursor10x_initConversation({
+  content: "I need help implementing authentication in my React app",
+  importance: "high"
+});
+
+// Display the banner to the user
+console.log("Memory System Status:", result.display.banner);
+
+// Use the context internally (do not show to user)
+const context = result.internal.context;
+// Use context for more informed assistance
 ```
 
-### Working with Short-Term Memory
+### Starting a New Session (Alternative Method)
 
 ```javascript
-// Store and retrieve short-term memory information
-async function manageShortTermMemory() {
-  // Store a user message
-  await mcp_cursor10x_storeUserMessage({
-    content: "We need to implement a new feature for user profiles",
-    importance: "high"
-  });
-  
-  // Store an assistant response
-  await mcp_cursor10x_storeAssistantMessage({
-    content: "I'll help you implement user profiles with customizable fields and validation",
-    importance: "medium"
-  });
-  
-  // Track an active file
-  await mcp_cursor10x_trackActiveFile({
-    filename: "src/models/User.js",
-    action: "edit"
-  });
-  
-  // Get recent messages filtered by importance
-  const messages = await mcp_cursor10x_getRecentMessages({
-    limit: 5,
-    importance: "high"
-  });
-  
-  // Get currently active files
-  const files = await mcp_cursor10x_getActiveFiles({
-    limit: 3
-  });
-}
+// Generate a memory banner at the start
+mcp_cursor10x_generateBanner({})
+
+// Get comprehensive context
+mcp_cursor10x_getComprehensiveContext({})
+
+// Store the user message
+mcp_cursor10x_storeUserMessage({
+  content: "I need help with authentication",
+  importance: "high"
+})
 ```
 
-### Working with Long-Term Memory
+### Tracking User Activity
 
 ```javascript
-// Store and manage long-term memory items
-async function manageLongTermMemory() {
-  // Record a project milestone
-  await mcp_cursor10x_storeMilestone({
-    title: "User Profile Feature",
-    description: "Implemented user profiles with custom fields, validation, and avatar uploads",
-    importance: "high"
-  });
-  
-  // Record a project decision
-  await mcp_cursor10x_storeDecision({
-    title: "Profile Data Storage",
-    content: "Store profile data in PostgreSQL with file uploads in S3",
-    reasoning: "This provides scalability and performance for both structured data and binary content",
-    importance: "high"
-  });
-  
-  // Record a project requirement
-  await mcp_cursor10x_storeRequirement({
-    title: "Profile Privacy Controls",
-    content: "Users must be able to control visibility of profile fields with granular permissions",
-    importance: "medium"
-  });
-}
-```
-
-### Working with Episodic Memory
-
-```javascript
-// Record and retrieve episodic memory
-async function manageEpisodicMemory() {
-  // Record user action
-  await mcp_cursor10x_recordEpisode({
-    actor: "user",
-    action: "request",
-    content: "Requested implementation of user profile feature",
-    importance: "medium",
-    context: "user-profiles"
-  });
-  
-  // Record assistant action
-  await mcp_cursor10x_recordEpisode({
-    actor: "assistant",
-    action: "implementation",
-    content: "Created User model with customizable fields",
-    importance: "medium",
-    context: "user-profiles"
-  });
-  
-  // Get recent episodes filtered by context
-  const episodes = await mcp_cursor10x_getRecentEpisodes({
-    limit: 5,
-    context: "user-profiles"
-  });
-}
-```
-
-### Comprehensive Memory Operations
-
-```javascript
-// Combining multiple memory operations for a complex workflow
-async function completeFeatureImplementation() {
-  // Record the overall milestone
-  await mcp_cursor10x_storeMilestone({
-    title: "Authentication System",
-    description: "Complete implementation of JWT authentication with refresh tokens",
-    importance: "high"
-  });
-  
-  // Store the implementation decision
-  await mcp_cursor10x_storeDecision({
-    title: "Authentication Method",
-    content: "Use JWT with refresh token rotation",
-    reasoning: "Provides secure, stateless authentication with protection against token theft",
-    importance: "high"
-  });
-  
-  // Track the files being edited
-  await mcp_cursor10x_trackActiveFile({
-    filename: "src/auth/jwt.js",
-    action: "edit"
-  });
-  
-  await mcp_cursor10x_trackActiveFile({
-    filename: "src/middleware/auth.js",
-    action: "create"
-  });
-  
-  // Record the implementation episode
-  await mcp_cursor10x_recordEpisode({
-    actor: "assistant",
-    action: "implementation",
-    content: "Implemented JWT authentication middleware",
-    importance: "medium",
-    context: "authentication"
-  });
-  
-  // Get current memory statistics
-  const stats = await mcp_cursor10x_getMemoryStats({});
-  console.log("Memory Stats:", stats);
-}
+// Track an active file
+await mcp_cursor10x_trackActiveFile({
+  filename: "src/auth/jwt.js",
+  action: "edit"
+});
 ```
 
 ## Troubleshooting

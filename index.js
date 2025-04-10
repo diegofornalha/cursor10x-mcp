@@ -44,6 +44,47 @@ if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+/**
+ * Formats a timestamp into a human-readable string
+ * @param {number} timestamp - Unix timestamp to format
+ * @returns {string} Human readable timestamp
+ */
+function formatTimestamp(timestamp) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  
+  // Within the last hour
+  if (now - date < 60 * 60 * 1000) {
+    const minutesAgo = Math.floor((now - date) / (60 * 1000));
+    return `${minutesAgo} minute${minutesAgo !== 1 ? 's' : ''} ago`;
+  }
+  
+  // Within the same day
+  if (date.getDate() === now.getDate() && 
+      date.getMonth() === now.getMonth() && 
+      date.getFullYear() === now.getFullYear()) {
+    return `Today at ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+  }
+  
+  // Yesterday
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.getDate() === yesterday.getDate() && 
+      date.getMonth() === yesterday.getMonth() && 
+      date.getFullYear() === yesterday.getFullYear()) {
+    return `Yesterday at ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+  }
+  
+  // Within the last week
+  if (now - date < 7 * 24 * 60 * 60 * 1000) {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return `${days[date.getDay()]} at ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+  }
+  
+  // Default format for older dates
+  return `${date.toLocaleDateString()} at ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+}
+
 // Logging function with timestamps and severity levels
 function log(message, level = "info") {
   const timestamp = new Date().toISOString();
@@ -343,6 +384,32 @@ const MEMORY_TOOLS = {
     }
   },
   
+  // Unified tool for beginning of conversation
+  INIT_CONVERSATION: {
+    name: "initConversation",
+    description: "Initializes a conversation by storing the user message, generating a banner, and retrieving context in one operation",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "Content of the user message"
+        },
+        importance: {
+          type: "string",
+          description: "Importance level (low, medium, high)",
+          default: "low"
+        },
+        metadata: {
+          type: "object",
+          description: "Optional metadata for the message",
+          additionalProperties: true
+        }
+      },
+      required: ["content"]
+    }
+  },
+  
   // Short-term memory tools
   STORE_USER_MESSAGE: {
     name: "storeUserMessage",
@@ -447,7 +514,7 @@ const MEMORY_TOOLS = {
       }
     }
   },
-  
+
   // Long-term memory tools
   STORE_MILESTONE: {
     name: "storeMilestone",
@@ -537,7 +604,7 @@ const MEMORY_TOOLS = {
       required: ["title", "content"]
     }
   },
-  
+
   // Episodic memory tools
   RECORD_EPISODE: {
     name: "recordEpisode",
@@ -653,63 +720,63 @@ async function initializeDatabase() {
     // Create tables if they don't exist
     const tables = {
       messages: `
-        CREATE TABLE IF NOT EXISTS messages (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          role TEXT NOT NULL,
-          content TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
           metadata TEXT,
           importance TEXT DEFAULT 'low'
         )
       `,
       active_files: `
-        CREATE TABLE IF NOT EXISTS active_files (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS active_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
           filename TEXT UNIQUE,
           last_accessed INTEGER,
-          metadata TEXT
+      metadata TEXT
         )
       `,
       milestones: `
-        CREATE TABLE IF NOT EXISTS milestones (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS milestones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT,
           description TEXT,
           importance TEXT DEFAULT 'medium',
           created_at INTEGER,
-          metadata TEXT
+      metadata TEXT
         )
       `,
       decisions: `
-        CREATE TABLE IF NOT EXISTS decisions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT,
           content TEXT,
-          reasoning TEXT,
+      reasoning TEXT,
           importance TEXT DEFAULT 'medium',
           created_at INTEGER,
-          metadata TEXT
+      metadata TEXT
         )
       `,
       requirements: `
-        CREATE TABLE IF NOT EXISTS requirements (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS requirements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT,
           content TEXT,
           importance TEXT DEFAULT 'medium',
           created_at INTEGER,
-          metadata TEXT
+      metadata TEXT
         )
       `,
       episodes: `
-        CREATE TABLE IF NOT EXISTS episodes (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS episodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
           actor TEXT,
           action TEXT,
           content TEXT,
           timestamp INTEGER,
           importance TEXT DEFAULT 'low',
-          context TEXT
+      context TEXT
         )
       `
     };
@@ -806,47 +873,234 @@ async function main() {
         if (!args && !noArgsTools.includes(name)) {
           throw new Error("No arguments provided");
         }
+
+        // Helper function to retrieve comprehensive context
+        async function getComprehensiveContext() {
+          const context = {
+            shortTerm: {},
+            longTerm: {},
+            episodic: {},
+            system: { healthy: true, timestamp: new Date().toISOString() }
+          };
+          
+          if (useInMemory) {
+            // Get short-term context
+            context.shortTerm = {
+              recentMessages: inMemoryStore.messages
+                .sort((a, b) => b.created_at - a.created_at)
+                .slice(0, 5)
+                .map(msg => ({
+                  ...msg,
+                  created_at: new Date(msg.created_at).toISOString()
+                })),
+              activeFiles: inMemoryStore.activeFiles
+                .sort((a, b) => b.last_accessed - a.last_accessed)
+                .slice(0, 5)
+                .map(file => ({
+                  ...file,
+                  last_accessed: new Date(file.last_accessed).toISOString()
+                }))
+            };
+            
+            // Get long-term context
+            context.longTerm = {
+              milestones: inMemoryStore.milestones
+                .sort((a, b) => b.created_at - a.created_at)
+                .slice(0, 3)
+                .map(m => ({
+                  ...m,
+                  created_at: new Date(m.created_at).toISOString()
+                })),
+              decisions: inMemoryStore.decisions
+                .filter(d => ['high', 'medium'].includes(d.importance))
+                .sort((a, b) => b.created_at - a.created_at)
+                .slice(0, 3)
+                .map(d => ({
+                  ...d,
+                  created_at: new Date(d.created_at).toISOString()
+                })),
+              requirements: inMemoryStore.requirements
+                .filter(r => ['high', 'medium'].includes(r.importance))
+                .sort((a, b) => b.created_at - a.created_at)
+                .slice(0, 3)
+                .map(r => ({
+                  ...r,
+                  created_at: new Date(r.created_at).toISOString()
+                }))
+            };
+            
+            // Get episodic context
+            context.episodic = {
+              recentEpisodes: inMemoryStore.episodes
+                .sort((a, b) => b.timestamp - a.timestamp)
+                .slice(0, 5)
+                .map(ep => ({
+                  ...ep,
+                  timestamp: new Date(ep.timestamp).toISOString()
+                }))
+            };
+          } else {
+            // Get short-term context
+            const messages = await db.prepare(`
+              SELECT role, content, created_at
+              FROM messages
+              ORDER BY created_at DESC
+              LIMIT 5
+            `).all();
+            
+            const files = await db.prepare(`
+              SELECT filename, last_accessed
+              FROM active_files
+              ORDER BY last_accessed DESC
+              LIMIT 5
+            `).all();
+            
+            context.shortTerm = {
+              recentMessages: messages.map(msg => ({
+                ...msg,
+                created_at: new Date(msg.created_at).toISOString()
+              })),
+              activeFiles: files.map(file => ({
+                ...file,
+                last_accessed: new Date(file.last_accessed).toISOString()
+              }))
+            };
+            
+            // Get long-term context
+            const milestones = await db.prepare(`
+              SELECT title, description, importance
+              FROM milestones
+              ORDER BY created_at DESC
+              LIMIT 3
+            `).all();
+            
+            const decisions = await db.prepare(`
+              SELECT title, content, reasoning
+              FROM decisions
+              WHERE importance IN ('high', 'medium')
+              ORDER BY created_at DESC
+              LIMIT 3
+            `).all();
+            
+            const requirements = await db.prepare(`
+              SELECT title, content
+              FROM requirements
+              WHERE importance IN ('high', 'medium')
+              ORDER BY created_at DESC
+              LIMIT 3
+            `).all();
+            
+            context.longTerm = {
+              milestones,
+              decisions,
+              requirements
+            };
+            
+            // Get episodic context
+            const episodes = await db.prepare(`
+              SELECT actor, action, content, timestamp
+              FROM episodes
+              ORDER BY timestamp DESC
+              LIMIT 5
+            `).all();
+            
+            context.episodic = {
+              recentEpisodes: episodes.map(ep => ({
+                ...ep,
+                timestamp: new Date(ep.timestamp).toISOString()
+              }))
+            };
+          }
+          
+          return context;
+        }
         
         switch (name) {
           case MEMORY_TOOLS.BANNER.name: {
             // Generate banner with memory system stats
-            let result;
-            if (useInMemory) {
-              result = {
+            try {
+              let memoryCount = 0;
+              let lastAccessed = 'Never';
+              let systemStatus = 'Active';
+              let mode = '';
+              
+              if (useInMemory) {
+                memoryCount = inMemoryStore.messages.length + 
+                              inMemoryStore.milestones.length + 
+                              inMemoryStore.decisions.length + 
+                              inMemoryStore.requirements.length + 
+                              inMemoryStore.episodes.length;
+                
+                mode = 'in-memory';
+                if (inMemoryStore.messages.length > 0) {
+                  const latestTimestamp = Math.max(
+                    ...inMemoryStore.messages.map(m => m.created_at),
+                    ...inMemoryStore.episodes.map(e => e.timestamp || 0)
+                  );
+                  lastAccessed = formatTimestamp(latestTimestamp);
+                }
+              } else {
+                // Count all items
+                const messageCnt = await db.prepare('SELECT COUNT(*) as count FROM messages').get();
+                const milestoneCnt = await db.prepare('SELECT COUNT(*) as count FROM milestones').get();
+                const decisionCnt = await db.prepare('SELECT COUNT(*) as count FROM decisions').get();
+                const requirementCnt = await db.prepare('SELECT COUNT(*) as count FROM requirements').get();
+                const episodeCnt = await db.prepare('SELECT COUNT(*) as count FROM episodes').get();
+                
+                memoryCount = (messageCnt?.count || 0) + 
+                              (milestoneCnt?.count || 0) + 
+                              (decisionCnt?.count || 0) + 
+                              (requirementCnt?.count || 0) + 
+                              (episodeCnt?.count || 0);
+                
+                mode = 'turso';
+                
+                // Get most recent timestamp across all tables
+                const lastMsgTime = await db.prepare('SELECT MAX(created_at) as timestamp FROM messages').get();
+                const lastEpisodeTime = await db.prepare('SELECT MAX(timestamp) as timestamp FROM episodes').get();
+                
+                const timestamps = [
+                  lastMsgTime?.timestamp,
+                  lastEpisodeTime?.timestamp
+                ].filter(Boolean);
+                
+                if (timestamps.length > 0) {
+                  lastAccessed = formatTimestamp(Math.max(...timestamps));
+                }
+              }
+              
+              // Create formatted banner
+              const banner = [
+                `🧠 Memory System: ${systemStatus}`,
+                `🗂️ Total Memories: ${memoryCount}`,
+                `🕚 Latest Memory: ${lastAccessed}`
+              ].join('\n');
+              
+              // Also include the data for backward compatibility
+              const result = {
                 status: 'ok',
-                memory_system: 'active',
-                mode: 'in-memory',
-                message_count: inMemoryStore.messages.length,
-                active_files_count: inMemoryStore.activeFiles.length,
-                last_accessed: inMemoryStore.messages.length > 0 ? 
-                  new Date(Math.max(...inMemoryStore.messages.map(m => m.created_at))).toLocaleString() : 'Never'
+                formatted_banner: banner,
+                memory_system: systemStatus.toLowerCase(),
+                mode,
+                memory_count: memoryCount,
+                last_accessed: lastAccessed
               };
-            } else {
-              // Count messages
-              const messageCount = await db.prepare('SELECT COUNT(*) as count FROM messages').get();
               
-              // Count active files
-              const fileCount = await db.prepare('SELECT COUNT(*) as count FROM active_files').get();
-              
-              // Get most recent message timestamp
-              const lastMessage = await db.prepare('SELECT MAX(created_at) as timestamp FROM messages').get();
-              
-              const timestamp = lastMessage?.timestamp ? new Date(lastMessage.timestamp).toLocaleString() : 'Never';
-              
-              result = {
-                status: 'ok',
-                memory_system: 'active',
-                mode: 'turso',
-                message_count: messageCount?.count || 0,
-                active_files_count: fileCount?.count || 0,
-                last_accessed: timestamp
+              return {
+                content: [{ type: "text", text: JSON.stringify(result) }],
+                isError: false
+              };
+            } catch (error) {
+              log(`Error generating banner: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ 
+                  status: 'error', 
+                  error: error.message,
+                  formatted_banner: "🧠 Memory System: Issue\n🗂️ Total Memories: Unknown\n🕚 Latest Memory: Unknown" 
+                }) }],
+                isError: true
               };
             }
-            
-            return {
-              content: [{ type: "text", text: JSON.stringify(result) }],
-              isError: false
-            };
           }
           
           case MEMORY_TOOLS.HEALTH.name: {
@@ -881,6 +1135,116 @@ async function main() {
             };
           }
           
+          case MEMORY_TOOLS.INIT_CONVERSATION.name: {
+            // Store user message, generate banner, and retrieve context
+            const { content, importance = 'low', metadata = null } = args;
+            const now = Date.now();
+            
+            try {
+              // Store user message
+              if (useInMemory) {
+                inMemoryStore.messages.push({
+                  role: 'user',
+                  content,
+                  created_at: now,
+                  importance,
+                  metadata
+                });
+              } else {
+                await db.prepare(`
+                  INSERT INTO messages (role, content, created_at, importance, metadata)
+                  VALUES ('user', ?, ?, ?, ?)
+                `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
+              }
+              
+              log(`Stored user message: "${content.substring(0, 30)}..." with importance: ${importance}`);
+
+              // Generate banner data
+              let memoryCount = 0;
+              let lastAccessed = formatTimestamp(now); // Use current message time as default
+              let systemStatus = 'Active';
+              let mode = '';
+              
+              if (useInMemory) {
+                memoryCount = inMemoryStore.messages.length + 
+                              inMemoryStore.milestones.length + 
+                              inMemoryStore.decisions.length + 
+                              inMemoryStore.requirements.length + 
+                              inMemoryStore.episodes.length;
+                
+                mode = 'in-memory';
+              } else {
+                // Count all items
+                const messageCnt = await db.prepare('SELECT COUNT(*) as count FROM messages').get();
+                const milestoneCnt = await db.prepare('SELECT COUNT(*) as count FROM milestones').get();
+                const decisionCnt = await db.prepare('SELECT COUNT(*) as count FROM decisions').get();
+                const requirementCnt = await db.prepare('SELECT COUNT(*) as count FROM requirements').get();
+                const episodeCnt = await db.prepare('SELECT COUNT(*) as count FROM episodes').get();
+                
+                memoryCount = (messageCnt?.count || 0) + 
+                              (milestoneCnt?.count || 0) + 
+                              (decisionCnt?.count || 0) + 
+                              (requirementCnt?.count || 0) + 
+                              (episodeCnt?.count || 0);
+                
+                mode = 'turso';
+              }
+              
+              // Create formatted banner
+              const formattedBanner = [
+                `🧠 Memory System: ${systemStatus}`,
+                `🗂️ Total Memories: ${memoryCount}`,
+                `🕚 Latest Memory: ${lastAccessed}`
+              ].join('\n');
+              
+              // Create banner object for backward compatibility
+              const bannerResult = {
+                status: 'ok',
+                formatted_banner: formattedBanner,
+                memory_system: systemStatus.toLowerCase(),
+                mode,
+                memory_count: memoryCount,
+                last_accessed: lastAccessed
+              };
+              
+              // Retrieve context
+              const contextResult = await getComprehensiveContext();
+              
+              // Format the response with clear separation between banner and context
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: JSON.stringify({ 
+                    status: 'ok', 
+                    display: {
+                      banner: bannerResult
+                    },
+                    internal: {
+                      context: contextResult,
+                      messageStored: true,
+                      timestamp: now
+                    }
+                  }) 
+                }],
+                isError: false
+              };
+            } catch (error) {
+              log(`Error in initConversation: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ 
+                  status: 'error', 
+                  error: error.message,
+                  display: {
+                    banner: {
+                      formatted_banner: "🧠 Memory System: Issue\n🗂️ Total Memories: Unknown\n🕚 Latest Memory: Unknown"
+                    }
+                  }
+                }) }],
+                isError: true
+              };
+            }
+          }
+          
           case MEMORY_TOOLS.STORE_USER_MESSAGE.name: {
             // Store user message
             const { content, importance = 'low', metadata = null } = args;
@@ -902,7 +1266,7 @@ async function main() {
             }
             
             log(`Stored user message: "${content.substring(0, 30)}..." with importance: ${importance}`);
-            
+
             return {
               content: [{ type: "text", text: JSON.stringify({ status: 'ok', timestamp: now }) }],
               isError: false
@@ -913,7 +1277,7 @@ async function main() {
             // Store assistant message
             const { content, importance = 'low', metadata = null } = args;
             const now = Date.now();
-            
+
             if (useInMemory) {
               inMemoryStore.messages.push({
                 role: 'assistant',
@@ -1042,7 +1406,7 @@ async function main() {
                 created_at: new Date(msg.created_at).toISOString()
               }));
             }
-            
+
             return {
               content: [{ type: "text", text: JSON.stringify({ status: 'ok', messages }) }],
               isError: false
@@ -1076,7 +1440,7 @@ async function main() {
                 last_accessed: new Date(file.last_accessed).toISOString()
               }));
             }
-            
+
             return {
               content: [{ type: "text", text: JSON.stringify({ status: 'ok', files }) }],
               isError: false
@@ -1087,7 +1451,7 @@ async function main() {
             // Store a milestone
             const { title, description, importance = 'medium', metadata = null } = args;
             const now = Date.now();
-            
+
             if (useInMemory) {
               inMemoryStore.milestones.push({
                 title,
@@ -1131,7 +1495,7 @@ async function main() {
             // Store a decision
             const { title, content, reasoning = null, importance = 'medium', metadata = null } = args;
             const now = Date.now();
-            
+
             if (useInMemory) {
               inMemoryStore.decisions.push({
                 title,
@@ -1176,7 +1540,7 @@ async function main() {
             // Store a requirement
             const { title, content, importance = 'medium', metadata = null } = args;
             const now = Date.now();
-            
+
             if (useInMemory) {
               inMemoryStore.requirements.push({
                 title,
@@ -1220,7 +1584,7 @@ async function main() {
             // Record an episode
             const { actor, action, content, importance = 'low', context = null } = args;
             const now = Date.now();
-            
+
             if (useInMemory) {
               inMemoryStore.episodes.push({
                 actor,
@@ -1291,7 +1655,7 @@ async function main() {
                 timestamp: new Date(ep.timestamp).toISOString()
               }));
             }
-            
+
             return {
               content: [{ type: "text", text: JSON.stringify({ status: 'ok', episodes }) }],
               isError: false
@@ -1301,142 +1665,8 @@ async function main() {
           case MEMORY_TOOLS.GET_COMPREHENSIVE_CONTEXT.name: {
             // Get comprehensive context from all memory subsystems
             try {
-              const context = {
-                shortTerm: {},
-                longTerm: {},
-                episodic: {},
-                system: { healthy: true, timestamp: new Date().toISOString() }
-              };
-              
-              if (useInMemory) {
-                // Get short-term context
-                context.shortTerm = {
-                  recentMessages: inMemoryStore.messages
-                    .sort((a, b) => b.created_at - a.created_at)
-                    .slice(0, 5)
-                    .map(msg => ({
-                      ...msg,
-                      created_at: new Date(msg.created_at).toISOString()
-                    })),
-                  activeFiles: inMemoryStore.activeFiles
-                    .sort((a, b) => b.last_accessed - a.last_accessed)
-                    .slice(0, 5)
-                    .map(file => ({
-                      ...file,
-                      last_accessed: new Date(file.last_accessed).toISOString()
-                    }))
-                };
-                
-                // Get long-term context
-                context.longTerm = {
-                  milestones: inMemoryStore.milestones
-                    .sort((a, b) => b.created_at - a.created_at)
-                    .slice(0, 3)
-                    .map(m => ({
-                      ...m,
-                      created_at: new Date(m.created_at).toISOString()
-                    })),
-                  decisions: inMemoryStore.decisions
-                    .filter(d => ['high', 'medium'].includes(d.importance))
-                    .sort((a, b) => b.created_at - a.created_at)
-                    .slice(0, 3)
-                    .map(d => ({
-                      ...d,
-                      created_at: new Date(d.created_at).toISOString()
-                    })),
-                  requirements: inMemoryStore.requirements
-                    .filter(r => ['high', 'medium'].includes(r.importance))
-                    .sort((a, b) => b.created_at - a.created_at)
-                    .slice(0, 3)
-                    .map(r => ({
-                      ...r,
-                      created_at: new Date(r.created_at).toISOString()
-                    }))
-                };
-                
-                // Get episodic context
-                context.episodic = {
-                  recentEpisodes: inMemoryStore.episodes
-                    .sort((a, b) => b.timestamp - a.timestamp)
-                    .slice(0, 5)
-                    .map(ep => ({
-                      ...ep,
-                      timestamp: new Date(ep.timestamp).toISOString()
-                    }))
-                };
-              } else {
-                // Get short-term context
-                const messages = await db.prepare(`
-                  SELECT role, content, created_at
-                  FROM messages
-                  ORDER BY created_at DESC
-                  LIMIT 5
-                `).all();
-                
-                const files = await db.prepare(`
-                  SELECT filename, last_accessed
-                  FROM active_files
-                  ORDER BY last_accessed DESC
-                  LIMIT 5
-                `).all();
-                
-                context.shortTerm = {
-                  recentMessages: messages.map(msg => ({
-                    ...msg,
-                    created_at: new Date(msg.created_at).toISOString()
-                  })),
-                  activeFiles: files.map(file => ({
-                    ...file,
-                    last_accessed: new Date(file.last_accessed).toISOString()
-                  }))
-                };
-                
-                // Get long-term context
-                const milestones = await db.prepare(`
-                  SELECT title, description, importance
-                  FROM milestones
-                  ORDER BY created_at DESC
-                  LIMIT 3
-                `).all();
-                
-                const decisions = await db.prepare(`
-                  SELECT title, content, reasoning
-                  FROM decisions
-                  WHERE importance IN ('high', 'medium')
-                  ORDER BY created_at DESC
-                  LIMIT 3
-                `).all();
-                
-                const requirements = await db.prepare(`
-                  SELECT title, content
-                  FROM requirements
-                  WHERE importance IN ('high', 'medium')
-                  ORDER BY created_at DESC
-                  LIMIT 3
-                `).all();
-                
-                context.longTerm = {
-                  milestones,
-                  decisions,
-                  requirements
-                };
-                
-                // Get episodic context
-                const episodes = await db.prepare(`
-                  SELECT actor, action, content, timestamp
-                  FROM episodes
-                  ORDER BY timestamp DESC
-                  LIMIT 5
-                `).all();
-                
-                context.episodic = {
-                  recentEpisodes: episodes.map(ep => ({
-                    ...ep,
-                    timestamp: new Date(ep.timestamp).toISOString()
-                  }))
-                };
-              }
-              
+              const context = await getComprehensiveContext();
+
               return {
                 content: [{ type: "text", text: JSON.stringify({ status: 'ok', context }) }],
                 isError: false
@@ -1497,7 +1727,7 @@ async function main() {
                     : null
                 };
               }
-              
+
               return {
                 content: [{ type: "text", text: JSON.stringify({ status: 'ok', stats }) }],
                 isError: false
@@ -1531,7 +1761,7 @@ async function main() {
         };
       }
     });
-    
+
     // Create and connect to transport
     log('Creating StdioServerTransport...');
     const transport = new StdioServerTransport();
@@ -1584,4 +1814,4 @@ process.on('uncaughtException', (error) => {
 main().catch(error => {
   log(`Fatal error during startup: ${error.message}`, "error");
   process.exit(1);
-});
+}); 
