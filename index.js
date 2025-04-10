@@ -12,21 +12,31 @@ import { dirname } from "path";
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Load environment variables from .env.local if they don't exist in process.env
+// Load environment variables if they don't exist in process.env
 if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
   try {
-    const dotenv = await import('dotenv');
-    const envFile = path.join(process.cwd(), '.env.local');
-    
-    if (fs.existsSync(envFile)) {
-      dotenv.config({ path: envFile });
-      console.log(`Loaded environment variables from ${envFile}`);
-    } else {
-      console.log(`Warning: ${envFile} not found, will use process.env only`);
+    // Try to load from .env.local in current directory
+    const dotenv = await import('dotenv').catch(() => null);
+    if (dotenv) {
+      // Check multiple possible env file locations
+      const possibleEnvFiles = [
+        path.join(process.cwd(), '.env.local'),
+        path.join(process.cwd(), '.env'),
+        path.join(dirname(fileURLToPath(import.meta.url)), '.env')
+      ];
+      
+      // Try each file
+      for (const envFile of possibleEnvFiles) {
+        if (fs.existsSync(envFile)) {
+          dotenv.config({ path: envFile });
+          console.log(`Loaded environment variables from ${envFile}`);
+          break;
+        }
+      }
     }
   } catch (error) {
-    console.error(`Failed to load dotenv: ${error.message}`);
-    console.log('Make sure to install dotenv with: npm install dotenv');
+    // Just log and continue - don't stop execution
+    console.log(`Note: Could not load environment variables from file: ${error.message}`);
   }
 }
 

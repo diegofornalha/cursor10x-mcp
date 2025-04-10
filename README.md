@@ -542,18 +542,12 @@ Save both the database URL and authentication token for use in the configuration
 
 ### Step-by-Step Installation
 
-1. **Clone the repository**
+1. **Install the package from npm**
    ```bash
-   git clone https://github.com/your-username/cursor10x-mcp.git
-   cd cursor10x-mcp
+   npm install -g cursor10x-mcp
    ```
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Create the Cursor MCP configuration**
+2. **Create the Cursor MCP configuration**
    
    Create or edit the `.cursor/mcp.json` file in your home directory:
    
@@ -568,9 +562,9 @@ Save both the database URL and authentication token for use in the configuration
    {
      "mcpServers": {
        "cursor10x-mcp": {
-         "command": "node",
+         "command": "npx",
          "args": [
-           "/absolute/path/to/cursor10x-mcp/index.js"
+           "cursor10x-mcp"
          ],
          "enabled": true,
          "env": {
@@ -582,40 +576,48 @@ Save both the database URL and authentication token for use in the configuration
    }
    ```
    
-   Make sure to use the absolute path to the `index.js` file and your actual Turso credentials.
+   Make sure to use your actual Turso credentials.
 
-4. **Restart Cursor**
+3. **Restart Cursor**
    
    After saving the configuration, restart Cursor to load the memory system.
 
-5. **Verify Installation**
+4. **Verify Installation**
    
    Test the installation by asking Claude to run the `mcp_cursor10x_generateBanner` tool.
 
-### Install from npm registry
+### For Developers
 
-```bash
-npm install cursor10x-mcp
-```
+If you want to work on cursor10x-mcp development:
 
-### Install and run from source
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/your-username/cursor10x-mcp.git
+   cd cursor10x-mcp
+   ```
 
-```bash
-# Clone the repository
-git clone https://github.com/your-username/cursor10x-mcp.git
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-# Navigate to the project directory
-cd cursor10x-mcp
+3. **Create a .env.local file with your Turso credentials**
+   ```bash
+   cp .env.example .env.local
+   # Edit .env.local with your actual credentials
+   ```
 
-# Install dependencies
-npm install
+4. **Run in development mode**
+   ```bash
+   npm run dev
+   ```
 
-# Build the project
-npm run build
-
-# Start the server
-npm start
-```
+5. **Build and publish to npm**
+   ```bash
+   # Update package.json with your information
+   npm run build
+   npm publish
+   ```
 
 ## Configuration
 
