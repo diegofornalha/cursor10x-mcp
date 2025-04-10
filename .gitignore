@@ -6,3 +6,5 @@ node_modules/
 /.cursor
 
 *.tgz
+
+.cursorrules

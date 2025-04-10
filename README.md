@@ -166,6 +166,50 @@ const result = await mcp_cursor10x_initConversation({
 // }
 ```
 
+#### `mcp_cursor10x_endConversation`
+
+Ends a conversation by combining multiple operations in one call: storing the assistant's final message, recording a milestone for what was accomplished, and logging an episode in the episodic memory. This unified tool replaces the need for separate storeAssistantMessage, storeMilestone, and recordEpisode calls at the end of each conversation.
+
+**Parameters:**
+- `content` (string, required): Content of the assistant's final message
+- `milestone_title` (string, required): Title of the milestone to record
+- `milestone_description` (string, required): Description of what was accomplished
+- `importance` (string, optional): Importance level ("low", "medium", "high", "critical"), defaults to "medium"
+- `metadata` (object, optional): Additional metadata for all records
+
+**Returns:**
+- Object with status and results of each operation
+
+**Example:**
+```javascript
+// End a conversation with finalization steps
+const result = await mcp_cursor10x_endConversation({
+  content: "I've implemented the authentication system with JWT tokens as requested",
+  milestone_title: "Authentication Implementation",
+  milestone_description: "Implemented secure JWT-based authentication with refresh tokens",
+  importance: "high"
+});
+// Result: {
+//   "status": "ok",
+//   "results": {
+//     "assistantMessage": {
+//       "stored": true,
+//       "timestamp": 1681568500123
+//     },
+//     "milestone": {
+//       "title": "Authentication Implementation",
+//       "stored": true,
+//       "timestamp": 1681568500123
+//     },
+//     "episode": {
+//       "action": "completion",
+//       "stored": true,
+//       "timestamp": 1681568500123
+//     }
+//   }
+// }
+```
+
 #### `mcp_cursor10x_checkHealth`
 
 Checks the health of the memory system and its database connection.
@@ -579,6 +623,59 @@ const episodes = await mcp_cursor10x_getRecentEpisodes({
 // }
 ```
 
+## EXAMPLE CUSTOM INSTRUCTIONS
+
+```
+# CURSOR10X MEMORY SYSTEM ENFORCEMENT RULES
+# These rules MUST be followed ALWAYS without exception.
+
+## RULE 1: CONVERSATION INITIALIZATION
+The FIRST action in the BEGINNING of EVERY response MUST be to initialize the conversation with this single tool call and display the banner from the response immediately after. It should not be called throughout the conversation response, ONLY right after the user's input:
+mcp_cursor10x_initConversation({content: "[user message]", importance: "[low/medium/high/critical]"})
+
+## RULE 2: ASSISTANT MESSAGE STORAGE
+EVERY assistant response containing important information MUST be stored:
+mcp_cursor10x_storeAssistantMessage({content: "[assistant response]", importance: "[low/medium/high/critical]"})
+
+## RULE 3: ACTIVE FILE TRACKING
+EVERY file being worked on or modified MUST be tracked - not files being read:
+mcp_cursor10x_trackActiveFile({filename: "[file path]", action: "[view/edit/create/close]"})
+
+## RULE 4: MILESTONE RECORDING
+ALL completed tasks or achievements MUST be recorded as milestones:
+mcp_cursor10x_storeMilestone({title: "[milestone title]", description: "[milestone description]", importance: "[low/medium/high/critical]"})
+
+## RULE 5: DECISION RECORDING
+ALL important project decisions MUST be recorded:
+mcp_cursor10x_storeDecision({title: "[decision title]", content: "[decision content]", reasoning: "[decision reasoning]", importance: "[low/medium/high/critical]"})
+
+## RULE 6: REQUIREMENT RECORDING
+ALL project requirements MUST be documented:
+mcp_cursor10x_storeRequirement({title: "[requirement title]", content: "[requirement content]", importance: "[low/medium/high/critical]"})
+
+## RULE 7: EPISODE RECORDING
+ALL significant events or actions MUST be recorded as episodes:
+mcp_cursor10x_recordEpisode({actor: "[user/assistant/system]", action: "[action type]", content: "[action details]", importance: "[low/medium/high/critical]"})
+
+## RULE 8: CONVERSATION END SEQUENCE
+This EXACT sequence MUST be executed at the VERY END of EVERY conversation:
+EITHER use the combined end conversation tool:
+mcp_cursor10x_endConversation({content: "[final response summary]", milestone_title: "Conversation Completion", milestone_description: "[what was accomplished]", importance: "medium"})
+
+OR use the separate tools in sequence:
+1. mcp_cursor10x_storeAssistantMessage({content: "[final response summary]", importance: "medium"})
+2. mcp_cursor10x_storeMilestone({title: "Conversation Completion", description: "[what was accomplished]", importance: "medium"})
+3. mcp_cursor10x_recordEpisode({actor: "assistant", action: "completion", content: "[conversation summary]", importance: "medium"})
+
+## RULE 9: HEALTH MONITORING
+Memory system health MUST be checked when issues occur:
+mcp_cursor10x_checkHealth({})
+
+## RULE 10: MEMORY STATISTICS
+Memory statistics MUST be gathered periodically:
+mcp_cursor10x_getMemoryStats({})
+```
+
 ## Installation
 
 ### Prerequisites
@@ -893,3 +990,44 @@ When storing items in memory, use appropriate importance levels:
 ## License
 
 MIT
+
+## Available Tools
+
+### Short-Term Memory Tools
+
+- `mcp_cursor10x_initConversation`: Initializes a conversation by storing the user message, generating a banner, and retrieving context in one operation
+  - Parameters:
+    - `content` (required): Content of the user message
+    - `importance` (optional, default: "low"): Importance level (low, medium, high, critical)
+    - `metadata` (optional): Additional metadata for the message
+  - Returns: An object containing the banner and context
+
+- `mcp_cursor10x_storeUserMessage`: Stores a user message in the short-term memory
+  - Parameters:
+    - `content` (required): Content of the message
+    - `importance` (optional, default: "low"): Importance level (low, medium, high, critical)
+    - `metadata` (optional): Additional metadata for the message
+  - Returns: The stored message ID
+
+### System Tools
+
+- `mcp_cursor10x_endConversation`: Finalizes a conversation by storing the assistant's final message, recording a milestone, and logging an episode in episodic memory
+  - Parameters:
+    - `content` (required): Content of the assistant's final message
+    - `milestone_title` (required): Title for the completion milestone
+    - `milestone_description` (required): Description of what was accomplished
+    - `importance` (optional, default: "medium"): Importance level (low, medium, high, critical)
+    - `metadata` (optional): Additional metadata for the operations
+  - Returns: Object with the status and results of each operation
+
+- `mcp_cursor10x_generateBanner`: Generates a banner containing memory system statistics and status
+  - Parameters: None
+  - Returns: A formatted banner with memory system information
+
+- `mcp_cursor10x_checkHealth`: Checks the health of the memory system and its database
+  - Parameters: None
+  - Returns: Health status information
+
+- `mcp_cursor10x_getMemoryStats`: Retrieves statistics about the memory system
+  - Parameters: None
+  - Returns: Statistics about messages, active files, and other memory components

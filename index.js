@@ -410,6 +410,40 @@ const MEMORY_TOOLS = {
     }
   },
   
+  // Unified tool for ending a conversation
+  END_CONVERSATION: {
+    name: "endConversation",
+    description: "Ends a conversation by storing the assistant message, recording a milestone, and logging an episode in one operation",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "Content of the assistant's final message"
+        },
+        milestone_title: {
+          type: "string",
+          description: "Title of the milestone to record"
+        },
+        milestone_description: {
+          type: "string",
+          description: "Description of what was accomplished"
+        },
+        importance: {
+          type: "string",
+          description: "Importance level (low, medium, high)",
+          default: "medium"
+        },
+        metadata: {
+          type: "object",
+          description: "Optional metadata",
+          additionalProperties: true
+        }
+      },
+      required: ["content", "milestone_title", "milestone_description"]
+    }
+  },
+  
   // Short-term memory tools
   STORE_USER_MESSAGE: {
     name: "storeUserMessage",
@@ -1734,6 +1768,124 @@ async function main() {
               };
             } catch (error) {
               log(`Error getting memory stats: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
+                isError: true
+              };
+            }
+          }
+          
+          case MEMORY_TOOLS.END_CONVERSATION.name: {
+            // Handle ending a conversation with multiple operations
+            try {
+              const { 
+                content, 
+                milestone_title, 
+                milestone_description, 
+                importance = 'medium', 
+                metadata = null 
+              } = args;
+              
+              const now = Date.now();
+              
+              // 1. Store assistant message
+              if (useInMemory) {
+                inMemoryStore.messages.push({
+                  role: 'assistant',
+                  content,
+                  created_at: now,
+                  importance,
+                  metadata
+                });
+              } else {
+                await db.prepare(`
+                  INSERT INTO messages (role, content, created_at, importance, metadata)
+                  VALUES ('assistant', ?, ?, ?, ?)
+                `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
+              }
+              
+              log(`Stored assistant message: "${content.substring(0, 30)}..." with importance: ${importance}`);
+              
+              // 2. Store milestone
+              if (useInMemory) {
+                inMemoryStore.milestones.push({
+                  title: milestone_title,
+                  description: milestone_description,
+                  created_at: now,
+                  importance,
+                  metadata
+                });
+              } else {
+                await db.prepare(`
+                  INSERT INTO milestones (title, description, created_at, importance, metadata)
+                  VALUES (?, ?, ?, ?, ?)
+                `).run(
+                  milestone_title, 
+                  milestone_description, 
+                  now, 
+                  importance, 
+                  metadata ? JSON.stringify(metadata) : null
+                );
+              }
+              
+              log(`Stored milestone: "${milestone_title}" with importance: ${importance}`);
+              
+              // 3. Record episode
+              if (useInMemory) {
+                inMemoryStore.episodes.push({
+                  actor: 'assistant',
+                  action: 'completion',
+                  content: `Completed: ${milestone_title}`,
+                  timestamp: now,
+                  importance,
+                  context: 'conversation',
+                  metadata
+                });
+              } else {
+                await db.prepare(`
+                  INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
+                  VALUES (?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                  'assistant', 
+                  'completion', 
+                  `Completed: ${milestone_title}`, 
+                  now, 
+                  importance, 
+                  'conversation', 
+                  metadata ? JSON.stringify(metadata) : null
+                );
+              }
+              
+              log(`Recorded episode: "Completed: ${milestone_title}" with importance: ${importance}`);
+              
+              // Return success response with timestamps
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: JSON.stringify({ 
+                    status: 'ok', 
+                    results: {
+                      assistantMessage: {
+                        stored: true,
+                        timestamp: now
+                      },
+                      milestone: {
+                        title: milestone_title,
+                        stored: true,
+                        timestamp: now
+                      },
+                      episode: {
+                        action: 'completion',
+                        stored: true,
+                        timestamp: now
+                      }
+                    }
+                  }) 
+                }],
+                isError: false
+              };
+            } catch (error) {
+              log(`Error in endConversation: ${error.message}`, "error");
               return {
                 content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
                 isError: true
