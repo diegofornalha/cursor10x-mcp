@@ -5,6 +5,9 @@ node_modules/
 .cursor/
 /.cursor
 
+tasks/
+/tasks
+
 *.tgz
 
 .cursorrules

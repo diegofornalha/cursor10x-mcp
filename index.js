@@ -85,6 +85,263 @@ function formatTimestamp(timestamp) {
   return `${date.toLocaleDateString()} at ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
 }
 
+// Vector embedding and similarity search utilities
+
+/**
+ * Generate a simple vector embedding from text using a basic hashing technique
+ * This is a placeholder for a proper embedding model that would be integrated
+ * with an actual ML model or embedding API
+ * 
+ * @param {string} text - Text to generate embedding for
+ * @param {number} dimensions - Dimensionality of the vector (default: 128)
+ * @returns {Float32Array} A float32 vector representation
+ */
+async function createEmbedding(text, dimensions = 128) {
+  try {
+    // In a production system, this would call an embedding API or model
+    // For this implementation, we'll use a simple deterministic approach
+    // that creates vector representations that maintain some text similarity
+    
+    // Normalize text
+    const normalizedText = text.toLowerCase().trim();
+    
+    // Create a fixed size Float32Array
+    const vector = new Float32Array(dimensions);
+    
+    // Simple hash function to generate vector elements
+    for (let i = 0; i < dimensions; i++) {
+      // Use different character combinations to influence each dimension
+      let value = 0;
+      for (let j = 0; j < normalizedText.length; j++) {
+        const charCode = normalizedText.charCodeAt(j);
+        // Use different seeds for each dimension to vary the representation
+        value += Math.sin(charCode * (i + 1) * 0.01) * Math.cos(j * 0.01);
+      }
+      // Normalize to a value between -1 and 1
+      vector[i] = Math.tanh(value);
+    }
+    
+    // Log and return the vector
+    logDebug(`Generated ${dimensions}-d embedding for text`);
+    return vector;
+  } catch (error) {
+    log(`Error creating embedding: ${error.message}`, "error");
+    // Return zero vector as fallback
+    return new Float32Array(dimensions);
+  }
+}
+
+/**
+ * Convert a Float32Array to a Buffer for database storage
+ * 
+ * @param {Float32Array} vector - Vector to convert
+ * @returns {Buffer} Buffer representation of the vector
+ */
+function vectorToBuffer(vector) {
+  return Buffer.from(vector.buffer);
+}
+
+/**
+ * Convert a Buffer back to a Float32Array
+ * 
+ * @param {Buffer} buffer - Buffer to convert
+ * @returns {Float32Array} Float32Array representation
+ */
+function bufferToVector(buffer) {
+  return new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
+}
+
+/**
+ * Store an embedding vector in the database
+ * 
+ * @param {number} contentId - ID of the content this vector represents
+ * @param {string} contentType - Type of content (message, file, snippet, etc.)
+ * @param {Float32Array} vector - The embedding vector
+ * @param {Object} metadata - Additional info about the vector (optional)
+ * @returns {Promise<Object>} Result of the insert operation
+ */
+async function storeEmbedding(contentId, contentType, vector, metadata = null) {
+  try {
+    if (!db) {
+      throw new Error("Database not initialized");
+    }
+    
+    // Convert the Float32Array to a buffer for storage
+    const vectorBuffer = vectorToBuffer(vector);
+    const now = Date.now();
+    
+    // Store in the vectors table
+    const result = await db.prepare(`
+      INSERT INTO vectors (content_id, content_type, vector, created_at, metadata)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      contentId,
+      contentType,
+      vectorBuffer,
+      now,
+      metadata ? JSON.stringify(metadata) : null
+    );
+    
+    logDebug(`Stored ${vector.length}-d vector for ${contentType} with ID ${contentId}`);
+    return result;
+  } catch (error) {
+    log(`Error storing embedding: ${error.message}`, "error");
+    throw error;
+  }
+}
+
+/**
+ * Find similar content using vector similarity
+ * 
+ * @param {Float32Array} queryVector - Vector to search for
+ * @param {string} contentType - Type of content to search (optional)
+ * @param {number} limit - Maximum number of results (default: 10)
+ * @param {number} threshold - Similarity threshold (default: 0.7)
+ * @returns {Promise<Array>} Array of similar content with similarity scores
+ */
+async function findSimilarVectors(queryVector, contentType = null, limit = 10, threshold = 0.7) {
+  try {
+    if (!db) {
+      throw new Error("Database not initialized");
+    }
+    
+    // Convert the query vector to a buffer
+    const queryBuffer = vectorToBuffer(queryVector);
+    
+    // First try to use Turso's vector_top_k for efficient similarity search
+    try {
+      // Build the query based on whether contentType is specified
+      let sql;
+      let params;
+      
+      if (contentType) {
+        sql = `
+          SELECT id, content_id, content_type, similarity
+          FROM vector_top_k('idx_vectors_vector', ?, ?) AS v
+          JOIN vectors ON vectors.id = v.rowid
+          WHERE content_type = ?
+          AND similarity >= ?
+          LIMIT ?
+        `;
+        params = [queryBuffer, limit * 2, contentType, threshold, limit];
+      } else {
+        sql = `
+          SELECT id, content_id, content_type, similarity
+          FROM vector_top_k('idx_vectors_vector', ?, ?) AS v
+          JOIN vectors ON vectors.id = v.rowid
+          WHERE similarity >= ?
+          LIMIT ?
+        `;
+        params = [queryBuffer, limit * 2, threshold, limit];
+      }
+      
+      const results = await db.prepare(sql).all(...params);
+      return results;
+    } catch (vectorError) {
+      // If vector_top_k fails (e.g., not supported in this Turso version),
+      // fall back to a simple full table scan with manual similarity calculation
+      log(`Vector index search failed, falling back to full scan: ${vectorError.message}`, "error");
+      
+      // Get all vectors of the requested type
+      let sql = 'SELECT id, content_id, content_type, vector FROM vectors';
+      let params = [];
+      
+      if (contentType) {
+        sql += ' WHERE content_type = ?';
+        params.push(contentType);
+      }
+      
+      const allVectors = await db.prepare(sql).all(...params);
+      
+      // Calculate similarities manually
+      const withSimilarity = allVectors.map(row => {
+        const storedVector = bufferToVector(row.vector);
+        const similarity = cosineSimilarity(queryVector, storedVector);
+        return { ...row, similarity };
+      });
+      
+      // Filter by threshold, sort by similarity, and limit results
+      return withSimilarity
+        .filter(row => row.similarity >= threshold)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit);
+    }
+  } catch (error) {
+    log(`Error finding similar vectors: ${error.message}`, "error");
+    return [];
+  }
+}
+
+/**
+ * Calculate cosine similarity between two vectors
+ * 
+ * @param {Float32Array} a - First vector 
+ * @param {Float32Array} b - Second vector
+ * @returns {number} Cosine similarity (-1 to 1)
+ */
+function cosineSimilarity(a, b) {
+  if (a.length !== b.length) return 0;
+  
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  
+  normA = Math.sqrt(normA);
+  normB = Math.sqrt(normB);
+  
+  if (normA === 0 || normB === 0) return 0;
+  
+  return dotProduct / (normA * normB);
+}
+
+/**
+ * Create vector indexes for efficient similarity search
+ * Should be called after database schema changes
+ * 
+ * @returns {Promise<boolean>} Success status
+ */
+async function createVectorIndexes() {
+  try {
+    if (!db) {
+      throw new Error("Database not initialized");
+    }
+    
+    // Basic indexes for content lookup
+    const basicIndexes = [
+      `CREATE INDEX IF NOT EXISTS idx_vectors_content_type ON vectors(content_type)`,
+      `CREATE INDEX IF NOT EXISTS idx_vectors_content_id ON vectors(content_id)`,
+    ];
+    
+    // Try to create the basic indexes
+    for (const indexSQL of basicIndexes) {
+      await db.prepare(indexSQL).run();
+    }
+    
+    // Now try to create the vector index using libsql_vector_idx
+    try {
+      const vectorIndexSQL = `
+        CREATE INDEX IF NOT EXISTS idx_vectors_vector ON vectors(libsql_vector_idx(vector)) WHERE vector IS NOT NULL
+      `;
+      await db.prepare(vectorIndexSQL).run();
+      log('Vector similarity index created successfully');
+    } catch (vectorError) {
+      // Non-fatal - the system can still work without vector indexes
+      log(`Note: Could not create vector similarity index: ${vectorError.message}. Vector search will use full scans.`, "error");
+    }
+    
+    return true;
+  } catch (error) {
+    log(`Error creating vector indexes: ${error.message}`, "error");
+    return false;
+  }
+}
+
 // Logging function with timestamps and severity levels
 function log(message, level = "info") {
   const timestamp = new Date().toISOString();
@@ -696,7 +953,12 @@ const MEMORY_TOOLS = {
     description: "Retrieves comprehensive context from all memory systems",
     inputSchema: {
       type: "object",
-      properties: {}
+      properties: {
+        query: {
+          type: "string",
+          description: "Optional query for semantic search to find relevant context"
+        }
+      }
     }
   },
   GET_MEMORY_STATS: {
@@ -705,6 +967,54 @@ const MEMORY_TOOLS = {
     inputSchema: {
       type: "object",
       properties: {}
+    }
+  },
+  
+  // Vector management tool
+  MANAGE_VECTOR: {
+    name: "manageVector",
+    description: "Unified tool for managing vector embeddings with operations for store, search, update, and delete",
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: {
+          type: "string",
+          description: "Operation to perform (store, search, update, delete)",
+          enum: ["store", "search", "update", "delete"]
+        },
+        contentId: {
+          type: "number",
+          description: "ID of the content this vector represents (for store, update, delete)"
+        },
+        contentType: {
+          type: "string",
+          description: "Type of content (message, file, snippet, etc.)"
+        },
+        vector: {
+          type: "array",
+          description: "Vector data as array of numbers (for store, update) or query vector (for search)"
+        },
+        metadata: {
+          type: "object",
+          description: "Additional info about the vector (optional)",
+          additionalProperties: true
+        },
+        vectorId: {
+          type: "number",
+          description: "ID of the vector to update or delete"
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of results for search operation",
+          default: 10
+        },
+        threshold: {
+          type: "number",
+          description: "Similarity threshold for search operation",
+          default: 0.7
+        }
+      },
+      required: ["operation"]
     }
   }
 };
@@ -810,8 +1120,42 @@ async function initializeDatabase() {
           content TEXT,
           timestamp INTEGER,
           importance TEXT DEFAULT 'low',
-      context TEXT
+      context TEXT,
+      metadata TEXT
         )
+      `,
+      // New vector-based tables for codebase indexing
+      vectors: `
+    CREATE TABLE IF NOT EXISTS vectors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_id INTEGER NOT NULL,
+      content_type TEXT NOT NULL,
+      vector BLOB NOT NULL,
+      created_at INTEGER NOT NULL,
+      metadata TEXT
+    )
+      `,
+      code_files: `
+    CREATE TABLE IF NOT EXISTS code_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_path TEXT UNIQUE,
+      language TEXT,
+      last_indexed INTEGER,
+      size INTEGER,
+      metadata TEXT
+    )
+      `,
+      code_snippets: `
+    CREATE TABLE IF NOT EXISTS code_snippets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_id INTEGER,
+      start_line INTEGER,
+      end_line INTEGER,
+      content TEXT,
+      symbol_type TEXT,
+      metadata TEXT,
+      FOREIGN KEY (file_id) REFERENCES code_files(id)
+    )
       `
     };
     
@@ -824,6 +1168,15 @@ async function initializeDatabase() {
         log(`Failed to create table ${name}: ${error.message}`, "error");
         throw error;
       }
+    }
+    
+    // Create vector indexes for efficient similarity search
+    try {
+      await createVectorIndexes();
+      log('Vector indexes setup completed');
+    } catch (indexError) {
+      // Non-fatal error - the system can still work without vector indexes
+      log(`Vector indexes creation failed: ${indexError.message}. Continuing with setup.`, "error");
     }
     
     // Create a test_connection table to verify write access
@@ -909,144 +1262,412 @@ async function main() {
         }
 
         // Helper function to retrieve comprehensive context
-        async function getComprehensiveContext() {
+        async function getComprehensiveContext(userMessage = null) {
           const context = {
             shortTerm: {},
             longTerm: {},
             episodic: {},
+            semantic: {}, // Section for semantically similar content
             system: { healthy: true, timestamp: new Date().toISOString() }
           };
           
-          if (useInMemory) {
-            // Get short-term context
-            context.shortTerm = {
-              recentMessages: inMemoryStore.messages
-                .sort((a, b) => b.created_at - a.created_at)
-                .slice(0, 5)
-                .map(msg => ({
-                  ...msg,
-                  created_at: new Date(msg.created_at).toISOString()
-                })),
-              activeFiles: inMemoryStore.activeFiles
-                .sort((a, b) => b.last_accessed - a.last_accessed)
-                .slice(0, 5)
-                .map(file => ({
-                  ...file,
-                  last_accessed: new Date(file.last_accessed).toISOString()
-                }))
-            };
+          try {
+            let queryVector = null;
+            // Generate embedding for the user message if provided
+            if (userMessage) {
+              queryVector = await createEmbedding(userMessage);
+              log(`Generated query vector for context relevance scoring`);
+            }
             
-            // Get long-term context
-            context.longTerm = {
-              milestones: inMemoryStore.milestones
-                .sort((a, b) => b.created_at - a.created_at)
-                .slice(0, 3)
-                .map(m => ({
-                  ...m,
-                  created_at: new Date(m.created_at).toISOString()
-                })),
-              decisions: inMemoryStore.decisions
-                .filter(d => ['high', 'medium'].includes(d.importance))
-                .sort((a, b) => b.created_at - a.created_at)
-                .slice(0, 3)
-                .map(d => ({
-                  ...d,
-                  created_at: new Date(d.created_at).toISOString()
-                })),
-              requirements: inMemoryStore.requirements
-                .filter(r => ['high', 'medium'].includes(r.importance))
-                .sort((a, b) => b.created_at - a.created_at)
-                .slice(0, 3)
-                .map(r => ({
-                  ...r,
-                  created_at: new Date(r.created_at).toISOString()
-                }))
-            };
-            
-            // Get episodic context
-            context.episodic = {
-              recentEpisodes: inMemoryStore.episodes
-                .sort((a, b) => b.timestamp - a.timestamp)
-                .slice(0, 5)
-                .map(ep => ({
-                  ...ep,
-                  timestamp: new Date(ep.timestamp).toISOString()
-                }))
-            };
-          } else {
-            // Get short-term context
+            // --- SHORT-TERM CONTEXT ---
+            // Fetch more messages than we'll ultimately use, so we can filter by relevance
             const messages = await db.prepare(`
-              SELECT role, content, created_at
+              SELECT id, role, content, created_at, importance
               FROM messages
               ORDER BY created_at DESC
-              LIMIT 5
+              LIMIT 15
             `).all();
             
+            // Score messages by relevance if we have a query vector
+            let scoredMessages = messages;
+            if (queryVector) {
+              scoredMessages = await scoreItemsByRelevance(messages, queryVector, 'user_message', 'assistant_message');
+              // Take top 5 most relevant messages
+              scoredMessages = scoredMessages.slice(0, 5);
+            } else {
+              // Without a query, just take the 5 most recent
+              scoredMessages = messages.slice(0, 5);
+            }
+            
+            // Get active files (similar approach)
             const files = await db.prepare(`
-              SELECT filename, last_accessed
+              SELECT id, filename, last_accessed
               FROM active_files
               ORDER BY last_accessed DESC
-              LIMIT 5
+              LIMIT 10
             `).all();
             
+            // Score files by relevance if we have a query vector
+            let scoredFiles = files;
+            if (queryVector) {
+              scoredFiles = await scoreItemsByRelevance(files, queryVector, 'code_file');
+              // Take top 5 most relevant files
+              scoredFiles = scoredFiles.slice(0, 5);
+            } else {
+              // Without a query, just take the 5 most recent
+              scoredFiles = files.slice(0, 5);
+            }
+            
             context.shortTerm = {
-              recentMessages: messages.map(msg => ({
+              recentMessages: scoredMessages.map(msg => ({
                 ...msg,
-                created_at: new Date(msg.created_at).toISOString()
+                created_at: new Date(msg.created_at).toISOString(),
+                relevance: msg.relevance || null
               })),
-              activeFiles: files.map(file => ({
+              activeFiles: scoredFiles.map(file => ({
                 ...file,
-                last_accessed: new Date(file.last_accessed).toISOString()
+                last_accessed: new Date(file.last_accessed).toISOString(),
+                relevance: file.relevance || null
               }))
             };
             
-            // Get long-term context
+            // --- LONG-TERM CONTEXT ---
+            // Fetch more items than we'll need so we can filter by relevance
             const milestones = await db.prepare(`
-              SELECT title, description, importance
+              SELECT id, title, description, importance, created_at
               FROM milestones
               ORDER BY created_at DESC
-              LIMIT 3
+              LIMIT 10
             `).all();
             
             const decisions = await db.prepare(`
-              SELECT title, content, reasoning
+              SELECT id, title, content, reasoning, importance, created_at
               FROM decisions
-              WHERE importance IN ('high', 'medium')
+              WHERE importance IN ('high', 'medium', 'critical')
               ORDER BY created_at DESC
-              LIMIT 3
+              LIMIT 10
             `).all();
             
             const requirements = await db.prepare(`
-              SELECT title, content
+              SELECT id, title, content, importance, created_at
               FROM requirements
-              WHERE importance IN ('high', 'medium')
+              WHERE importance IN ('high', 'medium', 'critical')
               ORDER BY created_at DESC
-              LIMIT 3
+              LIMIT 10
             `).all();
+            
+            // Score long-term items by relevance if we have a query vector
+            let scoredMilestones = milestones;
+            let scoredDecisions = decisions;
+            let scoredRequirements = requirements;
+            
+            if (queryVector) {
+              // Score each type of item
+              scoredMilestones = await scoreItemsByRelevance(milestones, queryVector, 'milestone');
+              scoredDecisions = await scoreItemsByRelevance(decisions, queryVector, 'decision');
+              scoredRequirements = await scoreItemsByRelevance(requirements, queryVector, 'requirement');
+              
+              // Take top most relevant items
+              scoredMilestones = scoredMilestones.slice(0, 3);
+              scoredDecisions = scoredDecisions.slice(0, 3);
+              scoredRequirements = scoredRequirements.slice(0, 3);
+            } else {
+              // Without a query, just take the most recent
+              scoredMilestones = milestones.slice(0, 3);
+              scoredDecisions = decisions.slice(0, 3);
+              scoredRequirements = requirements.slice(0, 3);
+            }
             
             context.longTerm = {
-              milestones,
-              decisions,
-              requirements
-            };
-            
-            // Get episodic context
-            const episodes = await db.prepare(`
-              SELECT actor, action, content, timestamp
-              FROM episodes
-              ORDER BY timestamp DESC
-              LIMIT 5
-            `).all();
-            
-            context.episodic = {
-              recentEpisodes: episodes.map(ep => ({
-                ...ep,
-                timestamp: new Date(ep.timestamp).toISOString()
+              milestones: scoredMilestones.map(m => ({
+                ...m,
+                created_at: new Date(m.created_at).toISOString(),
+                relevance: m.relevance || null
+              })),
+              decisions: scoredDecisions.map(d => ({
+                ...d,
+                created_at: new Date(d.created_at).toISOString(),
+                relevance: d.relevance || null
+              })),
+              requirements: scoredRequirements.map(r => ({
+                ...r,
+                created_at: new Date(r.created_at).toISOString(),
+                relevance: r.relevance || null
               }))
             };
+            
+            // --- EPISODIC CONTEXT ---
+            // Fetch episodes
+            const episodes = await db.prepare(`
+              SELECT id, actor, action, content, timestamp, importance, context
+              FROM episodes
+              ORDER BY timestamp DESC
+              LIMIT 15
+            `).all();
+            
+            // Score episodes by relevance if we have a query vector
+            let scoredEpisodes = episodes;
+            if (queryVector) {
+              scoredEpisodes = await scoreItemsByRelevance(episodes, queryVector, 'episode');
+              // Take top 5 most relevant episodes
+              scoredEpisodes = scoredEpisodes.slice(0, 5);
+            } else {
+              // Without a query, just take the 5 most recent
+              scoredEpisodes = episodes.slice(0, 5);
+            }
+            
+            context.episodic = {
+              recentEpisodes: scoredEpisodes.map(ep => ({
+                ...ep,
+                timestamp: new Date(ep.timestamp).toISOString(),
+                relevance: ep.relevance || null
+              }))
+            };
+            
+            // Add semantically similar content if userMessage is provided
+            if (userMessage && queryVector) {
+              try {
+                // Find similar messages with higher threshold for better quality matches
+                const similarMessages = await findSimilarItems(queryVector, 'user_message', 'assistant_message', 3, 0.6);
+                
+                // Find similar code files
+                const similarFiles = await findSimilarItems(queryVector, 'code_file', null, 2, 0.6);
+                
+                // Find similar code snippets
+                const similarSnippets = await findSimilarItems(queryVector, 'code_snippet', null, 3, 0.6);
+                
+                // Group similar code snippets by file to reduce redundancy
+                const groupedSnippets = groupSimilarSnippetsByFile(similarSnippets);
+                
+                // Add to context
+                context.semantic = {
+                  similarMessages,
+                  similarFiles,
+                  similarSnippets: groupedSnippets
+                };
+                
+                log(`Added semantic context with ${similarMessages.length} messages, ${similarFiles.length} files, and ${groupedSnippets.length} snippet groups`);
+              } catch (error) {
+                log(`Error adding semantic context: ${error.message}`, "error");
+                // Non-blocking error - we still return the basic context
+                context.semantic = { error: error.message };
+              }
+            }
+          } catch (error) {
+            log(`Error building comprehensive context: ${error.message}`, "error");
+            // Return minimal context in case of error
+            context.error = error.message;
           }
           
           return context;
+        }
+        
+        /**
+         * Helper function to score items by relevance to a query vector
+         * @param {Array} items - Array of items to score
+         * @param {Float32Array} queryVector - Vector to compare against
+         * @param {string} primaryType - Primary content type to look for
+         * @param {string} secondaryType - Secondary content type to look for (optional)
+         * @param {number} threshold - Minimum similarity score to include (default: 0.5)
+         * @returns {Array} Items with relevance scores, sorted by relevance
+         */
+        async function scoreItemsByRelevance(items, queryVector, primaryType, secondaryType = null, threshold = 0.5) {
+          if (!items || items.length === 0 || !queryVector) {
+            return items;
+          }
+          
+          try {
+            // Get all vectors for these content types
+            let sql = `
+              SELECT content_id, content_type, vector 
+              FROM vectors 
+              WHERE content_type = ?
+            `;
+            let params = [primaryType];
+            
+            if (secondaryType) {
+              sql = `
+                SELECT content_id, content_type, vector 
+                FROM vectors 
+                WHERE content_type = ? OR content_type = ?
+              `;
+              params = [primaryType, secondaryType];
+            }
+            
+            const vectors = await db.prepare(sql).all(...params);
+            
+            // Create a map of content_id to vector
+            const vectorMap = new Map();
+            vectors.forEach(v => {
+              vectorMap.set(v.content_id, bufferToVector(v.vector));
+            });
+            
+            // Score each item by comparing its vector to the query vector
+            const scoredItems = items.map(item => {
+              const id = item.id;
+              let relevance = 0;
+              
+              // If we have a vector for this item, calculate similarity
+              if (vectorMap.has(id)) {
+                const itemVector = vectorMap.get(id);
+                relevance = cosineSimilarity(queryVector, itemVector);
+              }
+              
+              return {
+                ...item,
+                relevance
+              };
+            });
+            
+            // Filter by threshold and sort by relevance (highest first)
+            return scoredItems
+              .filter(item => item.relevance >= threshold)
+              .sort((a, b) => b.relevance - a.relevance);
+          } catch (error) {
+            log(`Error scoring items by relevance: ${error.message}`, "error");
+            return items;
+          }
+        }
+        
+        /**
+         * Groups similar code snippets by file to reduce redundancy
+         * @param {Array} snippets - Array of code snippets
+         * @returns {Array} Grouped snippets by file
+         */
+        function groupSimilarSnippetsByFile(snippets) {
+          if (!snippets || snippets.length === 0) {
+            return [];
+          }
+          
+          // Create a map to group snippets by file path
+          const fileGroups = new Map();
+          
+          snippets.forEach(snippet => {
+            const filePath = snippet.file_path;
+            
+            if (!fileGroups.has(filePath)) {
+              fileGroups.set(filePath, {
+                file_path: filePath,
+                relevance: snippet.similarity,
+                snippets: []
+              });
+            }
+            
+            // Add snippet to its file group
+            const group = fileGroups.get(filePath);
+            group.snippets.push(snippet);
+            
+            // Update group relevance to highest snippet similarity
+            if (snippet.similarity > group.relevance) {
+              group.relevance = snippet.similarity;
+            }
+          });
+          
+          // Convert map to array and sort by overall relevance
+          return Array.from(fileGroups.values())
+            .sort((a, b) => b.relevance - a.relevance);
+        }
+        
+        /**
+         * Helper function to find semantically similar items based on a query vector
+         * @param {Float32Array} queryVector - The vector to compare against
+         * @param {string} contentType - The type of content to search for
+         * @param {string} alternativeType - Alternative content type to include (optional)
+         * @param {number} limit - Maximum number of results
+         * @param {number} threshold - Minimum similarity threshold
+         * @returns {Promise<Array>} Array of similar items with their details
+         */
+        async function findSimilarItems(queryVector, contentType, alternativeType = null, limit = 3, threshold = 0.5) {
+          try {
+            let similarVectors;
+            
+            if (alternativeType) {
+              // Find all items of either contentType or alternativeType
+              const type1Results = await findSimilarVectors(queryVector, contentType, limit, threshold);
+              const type2Results = await findSimilarVectors(queryVector, alternativeType, limit, threshold);
+              
+              // Combine and sort by similarity
+              similarVectors = [...type1Results, ...type2Results]
+                .sort((a, b) => b.similarity - a.similarity)
+                .slice(0, limit);
+            } else {
+              // Just search for the specified content type
+              similarVectors = await findSimilarVectors(queryVector, contentType, limit, threshold);
+            }
+            
+            // Fetch detailed content for each vector based on content type
+            const items = [];
+            for (const vector of similarVectors) {
+              try {
+                let item = { 
+                  id: vector.content_id, 
+                  type: vector.content_type,
+                  similarity: vector.similarity
+                };
+                
+                // Fetch additional details based on content type
+                if (vector.content_type === 'user_message' || vector.content_type === 'assistant_message') {
+                  const message = await db.prepare(`
+                    SELECT role, content, created_at, importance
+                    FROM messages
+                    WHERE id = ?
+                  `).get(vector.content_id);
+                  
+                  if (message) {
+                    item = {
+                      ...item,
+                      role: message.role,
+                      content: message.content,
+                      created_at: new Date(message.created_at).toISOString(),
+                      importance: message.importance
+                    };
+                  }
+                } else if (vector.content_type === 'code_file') {
+                  const file = await db.prepare(`
+                    SELECT file_path, language, last_indexed
+                    FROM code_files
+                    WHERE id = ?
+                  `).get(vector.content_id);
+                  
+                  if (file) {
+                    item = {
+                      ...item,
+                      path: file.file_path,
+                      language: file.language,
+                      last_indexed: new Date(file.last_indexed).toISOString()
+                    };
+                  }
+                } else if (vector.content_type === 'code_snippet') {
+                  const snippet = await db.prepare(`
+                    SELECT cs.content, cs.start_line, cs.end_line, cs.symbol_type, cf.file_path
+                    FROM code_snippets cs
+                    JOIN code_files cf ON cs.file_id = cf.id
+                    WHERE cs.id = ?
+                  `).get(vector.content_id);
+                  
+                  if (snippet) {
+                    item = {
+                      ...item,
+                      content: snippet.content,
+                      file_path: snippet.file_path,
+                      lines: `${snippet.start_line}-${snippet.end_line}`,
+                      symbol_type: snippet.symbol_type
+                    };
+                  }
+                }
+                
+                items.push(item);
+              } catch (detailError) {
+                log(`Error fetching details for ${vector.content_type} id ${vector.content_id}: ${detailError.message}`, "error");
+                // Skip this item and continue with others
+              }
+            }
+            
+            return items;
+          } catch (error) {
+            log(`Error in findSimilarItems: ${error.message}`, "error");
+            return [];
+          }
         }
         
         switch (name) {
@@ -1193,6 +1814,18 @@ async function main() {
               
               log(`Stored user message: "${content.substring(0, 30)}..." with importance: ${importance}`);
 
+              // Check if query is code-related and trigger background indexing if needed
+              if (isCodeRelatedQuery(content)) {
+                log(`Detected code-related query: "${content.substring(0, 30)}..."`);
+                
+                // Trigger background indexing process
+                // We use setTimeout to ensure this doesn't block the main flow
+                setTimeout(() => {
+                  triggerCodeIndexing(content)
+                    .catch(error => log(`Error triggering code indexing: ${error.message}`, "error"));
+                }, 0);
+              }
+              
               // Generate banner data
               let memoryCount = 0;
               let lastAccessed = formatTimestamp(now); // Use current message time as default
@@ -1241,8 +1874,8 @@ async function main() {
                 last_accessed: lastAccessed
               };
               
-              // Retrieve context
-              const contextResult = await getComprehensiveContext();
+              // Retrieve context with semantic search based on user message
+              const contextResult = await getComprehensiveContext(content);
               
               // Format the response with clear separation between banner and context
               return {
@@ -1283,54 +1916,59 @@ async function main() {
             // Store user message
             const { content, importance = 'low', metadata = null } = args;
             const now = Date.now();
+            let messageId; // Moved declaration here to fix scoping
             
-            if (useInMemory) {
-              inMemoryStore.messages.push({
-                role: 'user',
-                content,
-                created_at: now,
-                importance,
-                metadata
-              });
-            } else {
-              await db.prepare(`
-                INSERT INTO messages (role, content, created_at, importance, metadata)
-                VALUES ('user', ?, ?, ?, ?)
-              `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
+            try {
+              if (useInMemory) {
+                inMemoryStore.messages.push({
+                  role: 'user',
+                  content,
+                  created_at: now,
+                  importance,
+                  metadata
+                });
+                messageId = inMemoryStore.messages.length; // Simple ID for in-memory store
+              } else {
+                // Insert message into database
+                const result = await db.prepare(`
+                  INSERT INTO messages (role, content, created_at, importance, metadata)
+                  VALUES ('user', ?, ?, ?, ?)
+                `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
+                
+                messageId = result.lastInsertRowid;
+                
+                // Generate and store embedding in the background without blocking
+                setTimeout(async () => {
+                  try {
+                    // Generate vector embedding for the message
+                    const messageVector = await createEmbedding(content);
+                    
+                    // Store the embedding with link to the message
+                    await storeEmbedding(messageId, 'user_message', messageVector, {
+                      importance,
+                      timestamp: now,
+                      role: 'user'
+                    });
+                    
+                    logDebug(`Generated and stored embedding for user message ID ${messageId}`);
+                  } catch (vectorError) {
+                    log(`Error generating vector for user message: ${vectorError.message}`, "error");
+                    // Non-blocking - we continue even if vector generation fails
+                  }
+                }, 0);
+              }
+            } catch (error) {
+              log(`Error storing user message: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
+                isError: true
+              };
             }
             
             log(`Stored user message: "${content.substring(0, 30)}..." with importance: ${importance}`);
-
-            return {
-              content: [{ type: "text", text: JSON.stringify({ status: 'ok', timestamp: now }) }],
-              isError: false
-            };
-          }
-          
-          case MEMORY_TOOLS.STORE_ASSISTANT_MESSAGE.name: {
-            // Store assistant message
-            const { content, importance = 'low', metadata = null } = args;
-            const now = Date.now();
-
-            if (useInMemory) {
-              inMemoryStore.messages.push({
-                role: 'assistant',
-                content,
-                created_at: now,
-                importance,
-                metadata
-              });
-            } else {
-              await db.prepare(`
-                INSERT INTO messages (role, content, created_at, importance, metadata)
-                VALUES ('assistant', ?, ?, ?, ?)
-              `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
-            }
-            
-            log(`Stored assistant message: "${content.substring(0, 30)}..." with importance: ${importance}`);
             
             return {
-              content: [{ type: "text", text: JSON.stringify({ status: 'ok', timestamp: now }) }],
+              content: [{ type: "text", text: JSON.stringify({ status: 'ok', messageId, timestamp: now }) }],
               isError: false
             };
           }
@@ -1340,57 +1978,75 @@ async function main() {
             const { filename, action, metadata = null } = args;
             const now = Date.now();
             
-            if (useInMemory) {
-              // Find existing or create new entry
-              const existingFileIndex = inMemoryStore.activeFiles.findIndex(f => f.filename === filename);
-              if (existingFileIndex >= 0) {
-                inMemoryStore.activeFiles[existingFileIndex] = {
-                  ...inMemoryStore.activeFiles[existingFileIndex],
-                  last_accessed: now,
+            try {
+              if (useInMemory) {
+                // Find existing or create new entry
+                const existingFileIndex = inMemoryStore.activeFiles.findIndex(f => f.filename === filename);
+                if (existingFileIndex >= 0) {
+                  inMemoryStore.activeFiles[existingFileIndex] = {
+                    ...inMemoryStore.activeFiles[existingFileIndex],
+                    last_accessed: now,
+                    action,
+                    metadata
+                  };
+                } else {
+                  inMemoryStore.activeFiles.push({
+                    filename,
+                    action,
+                    last_accessed: now,
+                    metadata
+                  });
+                }
+                
+                // Record in episodes
+                inMemoryStore.episodes.push({
+                  actor: 'user',
                   action,
-                  metadata
-                };
-              } else {
-                inMemoryStore.activeFiles.push({
-                  filename,
-                  action,
-                  last_accessed: now,
-                  metadata
+                  content: filename,
+                  timestamp: now,
+                  importance: 'low',
+                  context: 'file-tracking'
                 });
+              } else {
+                // Upsert active file
+                await db.prepare(`
+                  INSERT INTO active_files (filename, last_accessed, metadata)
+                  VALUES (?, ?, ?)
+                  ON CONFLICT(filename) DO UPDATE SET
+                    last_accessed = excluded.last_accessed,
+                    metadata = excluded.metadata
+                `).run(filename, now, metadata ? JSON.stringify(metadata) : null);
+                
+                // Record file action in episodes
+                await db.prepare(`
+                  INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
+                  VALUES ('user', ?, ?, ?, 'low', 'file-tracking', NULL)
+                `).run(action, filename, now);
+                
+                // Start code indexing process in the background if this is a code file
+                // Don't block the main operation - run this asynchronously
+                setTimeout(async () => {
+                  try {
+                    await indexCodeFile(filename, action);
+                  } catch (indexError) {
+                    log(`Background code indexing error for ${filename}: ${indexError.message}`, "error");
+                  }
+                }, 0);
               }
               
-              // Record in episodes
-              inMemoryStore.episodes.push({
-                actor: 'user',
-                action,
-                content: filename,
-                timestamp: now,
-                importance: 'low',
-                context: 'file-tracking'
-              });
-            } else {
-              // Upsert active file
-              await db.prepare(`
-                INSERT INTO active_files (filename, last_accessed, metadata)
-                VALUES (?, ?, ?)
-                ON CONFLICT(filename) DO UPDATE SET
-                  last_accessed = excluded.last_accessed,
-                  metadata = excluded.metadata
-              `).run(filename, now, metadata ? JSON.stringify(metadata) : null);
+              log(`Tracked file: ${filename} with action: ${action}`);
               
-              // Record file action in episodes
-              await db.prepare(`
-                INSERT INTO episodes (actor, action, content, timestamp, importance, context)
-                VALUES ('user', ?, ?, ?, 'low', 'file-tracking')
-              `).run(action, filename, now);
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'ok', filename, action, timestamp: now }) }],
+                isError: false
+              };
+            } catch (error) {
+              log(`Error tracking file ${filename}: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
+                isError: true
+              };
             }
-            
-            log(`Tracked file: ${filename} with action: ${action}`);
-            
-            return {
-              content: [{ type: "text", text: JSON.stringify({ status: 'ok', filename, action, timestamp: now }) }],
-              isError: false
-            };
           }
           
           case MEMORY_TOOLS.GET_RECENT_MESSAGES.name: {
@@ -1512,8 +2168,8 @@ async function main() {
               
               // Record milestone in episodes
               await db.prepare(`
-                INSERT INTO episodes (actor, action, content, timestamp, importance, context)
-                VALUES ('system', 'milestone_created', ?, ?, ?, 'milestone-tracking')
+                INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
+                VALUES ('system', 'milestone_created', ?, ?, ?, 'milestone-tracking', NULL)
               `).run(title, now, importance);
             }
             
@@ -1557,8 +2213,8 @@ async function main() {
               
               // Record decision in episodes
               await db.prepare(`
-                INSERT INTO episodes (actor, action, content, timestamp, importance, context)
-                VALUES ('system', 'decision_made', ?, ?, ?, 'decision-tracking')
+                INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
+                VALUES ('system', 'decision_made', ?, ?, ?, 'decision-tracking', NULL)
               `).run(title, now, importance);
             }
             
@@ -1601,8 +2257,8 @@ async function main() {
               
               // Record requirement in episodes
               await db.prepare(`
-                INSERT INTO episodes (actor, action, content, timestamp, importance, context)
-                VALUES ('system', 'requirement_added', ?, ?, ?, 'requirement-tracking')
+                INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
+                VALUES ('system', 'requirement_added', ?, ?, ?, 'requirement-tracking', NULL)
               `).run(title, now, importance);
             }
             
@@ -1630,8 +2286,8 @@ async function main() {
               });
             } else {
               await db.prepare(`
-                INSERT INTO episodes (actor, action, content, timestamp, importance, context)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, NULL)
               `).run(actor, action, content, now, importance, context);
             }
             
@@ -1665,7 +2321,7 @@ async function main() {
                 }));
             } else {
               let query = `
-                SELECT id, actor, action, content, timestamp, importance, context
+                SELECT id, actor, action, content, timestamp, importance, context, metadata
                 FROM episodes
                 ORDER BY timestamp DESC
                 LIMIT ?
@@ -1674,7 +2330,7 @@ async function main() {
               
               if (context) {
                 query = `
-                  SELECT id, actor, action, content, timestamp, importance, context
+                  SELECT id, actor, action, content, timestamp, importance, context, metadata
                   FROM episodes
                   WHERE context = ?
                   ORDER BY timestamp DESC
@@ -1686,6 +2342,7 @@ async function main() {
               const rows = await db.prepare(query).all(...params);
               episodes = rows.map(ep => ({
                 ...ep,
+                metadata: ep.metadata ? JSON.parse(ep.metadata) : null,
                 timestamp: new Date(ep.timestamp).toISOString()
               }));
             }
@@ -1699,7 +2356,9 @@ async function main() {
           case MEMORY_TOOLS.GET_COMPREHENSIVE_CONTEXT.name: {
             // Get comprehensive context from all memory subsystems
             try {
-              const context = await getComprehensiveContext();
+              // Check if a query parameter is provided for semantic search
+              const { query = null } = args || {};
+              const context = await getComprehensiveContext(query);
 
               return {
                 content: [{ type: "text", text: JSON.stringify({ status: 'ok', context }) }],
@@ -1789,6 +2448,7 @@ async function main() {
               const now = Date.now();
               
               // 1. Store assistant message
+              let messageId;
               if (useInMemory) {
                 inMemoryStore.messages.push({
                   role: 'assistant',
@@ -1797,11 +2457,58 @@ async function main() {
                   importance,
                   metadata
                 });
+                messageId = inMemoryStore.messages.length;
               } else {
-                await db.prepare(`
+                const result = await db.prepare(`
                   INSERT INTO messages (role, content, created_at, importance, metadata)
                   VALUES ('assistant', ?, ?, ?, ?)
                 `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
+                
+                messageId = result.lastInsertRowid;
+                
+                // Generate and store embedding for the assistant message in the background
+                setTimeout(async () => {
+                  try {
+                    // Generate vector embedding for the message
+                    const messageVector = await createEmbedding(content);
+                    
+                    // Store the embedding with link to the message
+                    await storeEmbedding(messageId, 'assistant_message', messageVector, {
+                      importance,
+                      timestamp: now,
+                      role: 'assistant'
+                    });
+                    
+                    logDebug(`Generated and stored embedding for assistant message ID ${messageId}`);
+                    
+                    // Check if the message contains code and process it
+                    if (isCodeRelatedQuery(content)) {
+                      log(`Detected code-related content in assistant message ID ${messageId}`);
+                      
+                      // Extract code snippets if present using regex patterns
+                      const codeBlocks = extractCodeBlocks(content);
+                      if (codeBlocks.length > 0) {
+                        log(`Extracted ${codeBlocks.length} code blocks from assistant message`);
+                        
+                        // Store each code block with its own embedding
+                        for (let i = 0; i < codeBlocks.length; i++) {
+                          const block = codeBlocks[i];
+                          const snippetVector = await createEmbedding(block.content);
+                          
+                          // Store as a specialized code snippet type
+                          await storeEmbedding(messageId, 'assistant_code_snippet', snippetVector, {
+                            snippet_index: i,
+                            language: block.language || 'unknown',
+                            message_id: messageId
+                          });
+                        }
+                      }
+                    }
+                  } catch (vectorError) {
+                    log(`Error generating vector for assistant message: ${vectorError.message}`, "error");
+                    // Non-blocking - we continue even if vector generation fails
+                  }
+                }, 0);
               }
               
               log(`Stored assistant message: "${content.substring(0, 30)}..." with importance: ${importance}`);
@@ -1842,18 +2549,11 @@ async function main() {
                   metadata
                 });
               } else {
+                // Use the same format as other tools (recordEpisode, storeMilestone, etc.)
                 await db.prepare(`
                   INSERT INTO episodes (actor, action, content, timestamp, importance, context, metadata)
-                  VALUES (?, ?, ?, ?, ?, ?, ?)
-                `).run(
-                  'assistant', 
-                  'completion', 
-                  `Completed: ${milestone_title}`, 
-                  now, 
-                  importance, 
-                  'conversation', 
-                  metadata ? JSON.stringify(metadata) : null
-                );
+                  VALUES ('assistant', 'completion', ?, ?, ?, 'conversation', ?)
+                `).run(`Completed: ${milestone_title}`, now, importance, metadata ? JSON.stringify(metadata) : null);
               }
               
               log(`Recorded episode: "Completed: ${milestone_title}" with importance: ${importance}`);
@@ -1888,6 +2588,190 @@ async function main() {
               log(`Error in endConversation: ${error.message}`, "error");
               return {
                 content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
+                isError: true
+              };
+            }
+          }
+          
+          case MEMORY_TOOLS.MANAGE_VECTOR.name: {
+            // Handle vector management operations
+            try {
+              const { operation, contentId, contentType, vector, metadata = null, vectorId, limit = 10, threshold = 0.7 } = args;
+              
+              if (!operation) {
+                throw new Error("Operation is required for manageVector tool");
+              }
+              
+              if (useInMemory) {
+                throw new Error("Vector operations not supported in in-memory mode");
+              }
+              
+              log(`Vector operation requested: ${operation}`);
+              
+              switch (operation) {
+                case "store": {
+                  // Validate parameters
+                  if (!contentId || !contentType || !vector) {
+                    throw new Error("contentId, contentType, and vector are required for store operation");
+                  }
+                  
+                  // Convert array to Float32Array
+                  let vectorArray;
+                  if (Array.isArray(vector)) {
+                    vectorArray = new Float32Array(vector);
+                  } else {
+                    throw new Error("Vector must be provided as an array");
+                  }
+                  
+                  // Store the vector
+                  const result = await storeEmbedding(contentId, contentType, vectorArray, metadata);
+                  log(`Stored vector for ${contentType} with ID ${contentId}`);
+                  
+                  return {
+                    content: [{ type: "text", text: JSON.stringify({ 
+                      status: 'ok', 
+                      operation: 'store',
+                      result: {
+                        contentId,
+                        contentType,
+                        vectorDimensions: vectorArray.length,
+                        timestamp: Date.now()
+                      }
+                    }) }],
+                    isError: false
+                  };
+                }
+                
+                case "search": {
+                  // Validate parameters
+                  if (!vector) {
+                    throw new Error("Vector is required for search operation");
+                  }
+                  
+                  // Convert array to Float32Array for the query
+                  let queryVector;
+                  if (Array.isArray(vector)) {
+                    queryVector = new Float32Array(vector);
+                  } else {
+                    throw new Error("Vector must be provided as an array");
+                  }
+                  
+                  // Perform the search
+                  const similarVectors = await findSimilarVectors(queryVector, contentType, limit, threshold);
+                  log(`Found ${similarVectors.length} similar vectors for ${contentType || 'all content types'}`);
+                  
+                  return {
+                    content: [{ type: "text", text: JSON.stringify({ 
+                      status: 'ok', 
+                      operation: 'search',
+                      results: similarVectors 
+                    }) }],
+                    isError: false
+                  };
+                }
+                
+                case "update": {
+                  // Validate parameters
+                  if (!vectorId || !vector) {
+                    throw new Error("vectorId and vector are required for update operation");
+                  }
+                  
+                  // Convert array to Float32Array
+                  let vectorArray;
+                  if (Array.isArray(vector)) {
+                    vectorArray = new Float32Array(vector);
+                  } else {
+                    throw new Error("Vector must be provided as an array");
+                  }
+                  
+                  // Check if vector exists
+                  const existingVector = await db.prepare(`
+                    SELECT id, content_id, content_type FROM vectors WHERE id = ?
+                  `).get(vectorId);
+                  
+                  if (!existingVector) {
+                    throw new Error(`Vector with ID ${vectorId} not found`);
+                  }
+                  
+                  // Update the vector
+                  const vectorBuffer = vectorToBuffer(vectorArray);
+                  const now = Date.now();
+                  
+                  const result = await db.prepare(`
+                    UPDATE vectors 
+                    SET vector = ?, metadata = ?, created_at = ?
+                    WHERE id = ?
+                  `).run(
+                    vectorBuffer,
+                    metadata ? JSON.stringify(metadata) : null,
+                    now,
+                    vectorId
+                  );
+                  
+                  log(`Updated vector with ID ${vectorId}`);
+                  
+                  return {
+                    content: [{ type: "text", text: JSON.stringify({ 
+                      status: 'ok', 
+                      operation: 'update',
+                      result: {
+                        vectorId,
+                        contentId: existingVector.content_id,
+                        contentType: existingVector.content_type,
+                        vectorDimensions: vectorArray.length,
+                        timestamp: now
+                      }
+                    }) }],
+                    isError: false
+                  };
+                }
+                
+                case "delete": {
+                  // Validate parameters
+                  if (!vectorId) {
+                    throw new Error("vectorId is required for delete operation");
+                  }
+                  
+                  // Check if vector exists
+                  const existingVector = await db.prepare(`
+                    SELECT id FROM vectors WHERE id = ?
+                  `).get(vectorId);
+                  
+                  if (!existingVector) {
+                    throw new Error(`Vector with ID ${vectorId} not found`);
+                  }
+                  
+                  // Delete the vector
+                  const result = await db.prepare(`
+                    DELETE FROM vectors WHERE id = ?
+                  `).run(vectorId);
+                  
+                  log(`Deleted vector with ID ${vectorId}`);
+                  
+                  return {
+                    content: [{ type: "text", text: JSON.stringify({ 
+                      status: 'ok', 
+                      operation: 'delete',
+                      result: {
+                        vectorId,
+                        deleted: true,
+                        timestamp: Date.now()
+                      }
+                    }) }],
+                    isError: false
+                  };
+                }
+                
+                default:
+                  throw new Error(`Unknown operation: ${operation}. Supported operations are: store, search, update, delete`);
+              }
+            } catch (error) {
+              log(`Error in manageVector tool: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ 
+                  status: 'error', 
+                  error: error.message 
+                }) }],
                 isError: true
               };
             }
@@ -1966,4 +2850,737 @@ process.on('uncaughtException', (error) => {
 main().catch(error => {
   log(`Fatal error during startup: ${error.message}`, "error");
   process.exit(1);
-}); 
+});
+
+/**
+ * Index a code file by extracting metadata, identifying language, and generating embeddings
+ * This function handles the code indexing process triggered by file tracking
+ * 
+ * @param {string} filePath - Path to the file to index
+ * @param {string} action - Action performed on the file (open, edit, close, etc.)
+ * @returns {Promise<boolean>} Success status
+ */
+async function indexCodeFile(filePath, action) {
+  try {
+    // Skip if database is not available or if this is a close action
+    if (!db || action === 'close') {
+      return false;
+    }
+    
+    log(`Starting code indexing for file: ${filePath}`);
+    
+    // Read the file to index
+    let fileContent;
+    try {
+      fileContent = fs.readFileSync(filePath, 'utf8');
+      if (!fileContent) {
+        throw new Error("File is empty or could not be read");
+      }
+    } catch (readError) {
+      log(`Could not read file for indexing: ${readError.message}`, "error");
+      return false;
+    }
+    
+    // Get file stats
+    const stats = fs.statSync(filePath);
+    const fileSize = stats.size;
+    
+    // Detect language based on file extension
+    const extension = path.extname(filePath).toLowerCase();
+    let language = 'text'; // Default to plain text
+    
+    // Simple language detection by extension
+    const languageMap = {
+      '.js': 'javascript',
+      '.jsx': 'javascript',
+      '.ts': 'typescript',
+      '.tsx': 'typescript',
+      '.py': 'python',
+      '.rb': 'ruby',
+      '.java': 'java',
+      '.c': 'c',
+      '.cpp': 'cpp',
+      '.h': 'c',
+      '.hpp': 'cpp',
+      '.cs': 'csharp',
+      '.go': 'go',
+      '.rs': 'rust',
+      '.php': 'php',
+      '.html': 'html',
+      '.css': 'css',
+      '.json': 'json',
+      '.md': 'markdown',
+      '.sh': 'shell',
+      '.sql': 'sql'
+    };
+    
+    if (languageMap[extension]) {
+      language = languageMap[extension];
+    }
+    
+    // Create or update entry in code_files table
+    let fileId;
+    try {
+      // Check if file already exists in database
+      const existingFile = await db.prepare(`
+        SELECT id FROM code_files WHERE file_path = ?
+      `).get(filePath);
+      
+      if (existingFile) {
+        // Update existing record
+        await db.prepare(`
+          UPDATE code_files
+          SET language = ?, last_indexed = ?, size = ?
+          WHERE id = ?
+        `).run(language, Date.now(), fileSize, existingFile.id);
+        fileId = existingFile.id;
+        log(`Updated indexed file: ${filePath}`);
+      } else {
+        // Insert new record
+        const result = await db.prepare(`
+          INSERT INTO code_files (file_path, language, last_indexed, size)
+          VALUES (?, ?, ?, ?)
+        `).run(filePath, language, Date.now(), fileSize);
+        fileId = result.lastInsertRowid;
+        log(`Added new indexed file: ${filePath}`);
+      }
+      
+      // Generate embedding for file content
+      // Only use a sample of the file content if it's very large
+      const contentToEmbed = fileContent.length > 10000 
+        ? fileContent.substring(0, 5000) + "\n...\n" + fileContent.substring(fileContent.length - 5000) 
+        : fileContent;
+      
+      const fileVector = await createEmbedding(contentToEmbed);
+      
+      // Store the embedding
+      await storeEmbedding(fileId, 'code_file', fileVector, {
+        language,
+        size: fileSize,
+        path: filePath
+      });
+      
+      // Extract code snippets if it's a recognized code file
+      if (language !== 'text' && language !== 'markdown') {
+        await extractCodeSnippets(filePath, fileContent, fileId, language);
+      }
+      
+      return true;
+    } catch (dbError) {
+      log(`Database error during file indexing: ${dbError.message}`, "error");
+      return false;
+    }
+  } catch (error) {
+    log(`Failed to index code file: ${error.message}`, "error");
+    return false;
+  }
+}
+
+/**
+ * Extract and store code snippets from a file
+ * Performs simple code structure analysis to identify functions, classes, etc.
+ * 
+ * @param {string} filePath - Path to the file
+ * @param {string} content - File content
+ * @param {number} fileId - ID of the file in code_files table
+ * @param {string} language - Programming language
+ * @returns {Promise<boolean>} Success status
+ */
+async function extractCodeSnippets(filePath, content, fileId, language) {
+  try {
+    log(`Extracting code snippets from ${filePath}`);
+    
+    // First, clear existing snippets for this file
+    await db.prepare(`
+      DELETE FROM code_snippets WHERE file_id = ?
+    `).run(fileId);
+    
+    // Split content into lines
+    const lines = content.split('\n');
+    
+    // Simple regex patterns for common code structures
+    // This is a very basic implementation - a real system would use proper parsers
+    const patterns = {
+      // Function detection varies by language
+      function: {
+        javascript: /^\s*(async\s+)?function\s+(\w+)\s*\(/,
+        typescript: /^\s*(async\s+)?function\s+(\w+)\s*\(/,
+        python: /^\s*def\s+(\w+)\s*\(/,
+        java: /^\s*(public|private|protected)?\s*(static)?\s*\w+\s+(\w+)\s*\(/,
+        ruby: /^\s*def\s+(\w+)/,
+        go: /^\s*func\s+(\w+)/,
+        rust: /^\s*fn\s+(\w+)/
+      },
+      // Class detection
+      class: {
+        javascript: /^\s*class\s+(\w+)/,
+        typescript: /^\s*class\s+(\w+)/,
+        python: /^\s*class\s+(\w+)/,
+        java: /^\s*(public|private|protected)?\s*class\s+(\w+)/,
+        ruby: /^\s*class\s+(\w+)/,
+        rust: /^\s*struct\s+(\w+)|impl\s+(\w+)/
+      },
+      // Variable declaration - very basic detection
+      variable: {
+        javascript: /^\s*(const|let|var)\s+(\w+)\s*=/,
+        typescript: /^\s*(const|let|var)\s+(\w+)\s*:/,
+        python: /^\s*(\w+)\s*=/,
+        java: /^\s*(private|public|protected)?\s*\w+\s+(\w+)\s*=/
+      }
+    };
+    
+    // Use appropriate patterns based on language, fallback to javascript patterns
+    const langPatterns = {
+      function: patterns.function[language] || patterns.function.javascript,
+      class: patterns.class[language] || patterns.class.javascript,
+      variable: patterns.variable[language] || patterns.variable.javascript
+    };
+    
+    // Track found snippets
+    const snippets = [];
+    
+    // Scan through lines to identify code structures
+    let currentSymbol = null;
+    let currentStart = 0;
+    let currentType = null;
+    let currentContent = '';
+    let braceCount = 0;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Check for function, class, or variable declarations
+      if (!currentSymbol) {
+        for (const [type, pattern] of Object.entries(langPatterns)) {
+          const match = line.match(pattern);
+          if (match) {
+            currentSymbol = match[match.length - 1];
+            currentStart = i;
+            currentType = type;
+            currentContent = line;
+            if (line.includes('{')) braceCount = 1;
+            break;
+          }
+        }
+      } else {
+        // Inside a code block
+        currentContent += '\n' + line;
+        
+        // Count braces to determine block end
+        if (line.includes('{')) braceCount++;
+        if (line.includes('}')) braceCount--;
+        
+        // Check if we've reached the end of the code block
+        const isBlockEnd = 
+          (braceCount === 0 && line.includes('}')) || // For brace languages
+          (language === 'python' && line.match(/^\S/)); // For Python (indentation)
+        
+        if (isBlockEnd || i === lines.length - 1) {
+          // Store the found snippet
+          snippets.push({
+            symbol: currentSymbol,
+            type: currentType,
+            start: currentStart,
+            end: i,
+            content: currentContent
+          });
+          
+          // Reset for next block
+          currentSymbol = null;
+          currentStart = 0;
+          currentType = null;
+          currentContent = '';
+          braceCount = 0;
+        }
+      }
+    }
+    
+    // Store extracted snippets in database
+    for (const snippet of snippets) {
+      // Generate embedding for the snippet
+      const snippetVector = await createEmbedding(snippet.content);
+      
+      // Insert snippet
+      const result = await db.prepare(`
+        INSERT INTO code_snippets (file_id, start_line, end_line, content, symbol_type, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        fileId,
+        snippet.start,
+        snippet.end,
+        snippet.content,
+        snippet.type,
+        JSON.stringify({ symbol: snippet.symbol })
+      );
+      
+      // Store embedding for the snippet
+      await storeEmbedding(result.lastInsertRowid, 'code_snippet', snippetVector, {
+        file_id: fileId,
+        symbol: snippet.symbol,
+        type: snippet.type
+      });
+    }
+    
+    log(`Extracted ${snippets.length} code snippets from ${filePath}`);
+    return true;
+  } catch (error) {
+    log(`Error extracting code snippets: ${error.message}`, "error");
+    return false;
+  }
+} 
+
+// Define a simple background task queue to manage indexing operations
+const backgroundTasks = {
+  queue: [],
+  isProcessing: false,
+  
+  /**
+   * Add a task to the background queue
+   * @param {Function} task - Function to execute
+   * @param {...any} params - Parameters to pass to the function
+   */
+  addTask(task, ...params) {
+    this.queue.push({ task, params });
+    log(`Added task to background queue. Queue length: ${this.queue.length}`);
+    
+    // Start processing if not already running
+    if (!this.isProcessing) {
+      this.processQueue();
+    }
+  },
+  
+  /**
+   * Process tasks in the queue one by one
+   */
+  async processQueue() {
+    if (this.isProcessing || this.queue.length === 0) return;
+    
+    this.isProcessing = true;
+    log(`Starting background queue processing. Tasks: ${this.queue.length}`);
+    
+    try {
+      const { task, params } = this.queue.shift();
+      if (typeof task === 'function') {
+        if (params.length === 0) {
+          await task();
+        } else if (params.length === 1) {
+          await task(params[0]);
+        } else {
+          await task(...params);
+        }
+      } else {
+        log(`Invalid task in background queue: ${typeof task}`, "error");
+      }
+    } catch (error) {
+      log(`Error in background task: ${error.message}`, "error");
+    } finally {
+      this.isProcessing = false;
+      
+      // Continue processing if more tasks remain
+      if (this.queue.length > 0) {
+        setTimeout(() => this.processQueue(), 100); // Small delay between tasks
+      }
+    }
+  }
+};
+
+/**
+ * Detect if a query is code-related based on patterns and keywords
+ * @param {string} query - The user's query text
+ * @returns {boolean} Whether the query is likely code-related
+ */
+function isCodeRelatedQuery(query) {
+  if (!query) return false;
+  
+  // Convert to lowercase for case-insensitive matching
+  const text = query.toLowerCase();
+  
+  // Common code-related terms
+  const codeTerms = [
+    'code', 'function', 'class', 'method', 'variable', 'object',
+    'array', 'string', 'number', 'boolean', 'interface', 'type',
+    'implement', 'extend', 'import', 'export', 'module', 'package',
+    'library', 'framework', 'api', 'component', 'property', 'attribute',
+    'syntax', 'compiler', 'interpreter', 'runtime', 'debug', 'error',
+    'exception', 'bug', 'fix', 'issue', 'pull request', 'commit',
+    'branch', 'merge', 'git', 'repository', 'algorithm', 'data structure'
+  ];
+  
+  // Programming language names
+  const languages = [
+    'javascript', 'typescript', 'python', 'java', 'c++', 'c#', 'ruby',
+    'go', 'rust', 'php', 'swift', 'kotlin', 'scala', 'perl', 'r',
+    'bash', 'shell', 'sql', 'html', 'css', 'jsx', 'tsx'
+  ];
+  
+  // Check for presence of code terms or language names
+  for (const term of [...codeTerms, ...languages]) {
+    if (text.includes(term)) return true;
+  }
+  
+  // Check for code patterns
+  const codePatterns = [
+    /\b(function|def|class|import|export|from|const|let|var)\b/i,
+    /\b(if|else|for|while|switch|case|try|catch|async|await)\b/i,
+    /\b(return|yield|throw|break|continue)\b/i,
+    /[\[\]{}()<>]/g,  // Code symbols like brackets
+    /\w+\.\w+\(/,     // Method calls like object.method()
+    /\w+\([^)]*\)/,   // Function calls like func()
+    /\s(===|!==|==|!=|>=|<=|&&|\|\|)\s/, // Comparison operators
+    /`[^`]*`/,        // Template literals
+    /\/\/|\/\*|\*\//  // Comments
+  ];
+  
+  for (const pattern of codePatterns) {
+    if (pattern.test(text)) return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Trigger background indexing of recently active files that haven't been indexed yet
+ * @param {string} query - The user query to determine which files might be relevant
+ */
+async function triggerCodeIndexing(query) {
+  try {
+    if (!db || useInMemory) return;
+    
+    // Get recently active files
+    const activeFiles = await db.prepare(`
+      SELECT filename, last_accessed 
+      FROM active_files 
+      ORDER BY last_accessed DESC 
+      LIMIT 10
+    `).all();
+    
+    if (!activeFiles || activeFiles.length === 0) {
+      log('No active files found for background indexing');
+      return;
+    }
+    
+    // Check which files need indexing (not in code_files table or outdated)
+    const filesToIndex = [];
+    
+    for (const file of activeFiles) {
+      // Skip non-code files
+      const ext = path.extname(file.filename).toLowerCase();
+      if (!ext || ext === '.md' || ext === '.txt' || ext === '.json') continue;
+      
+      try {
+        // Check if file exists in the code_files table
+        const indexedFile = await db.prepare(`
+          SELECT id, last_indexed, file_path 
+          FROM code_files 
+          WHERE file_path = ?
+        `).get(file.filename);
+        
+        // Get file stats to check if file has been modified since last indexed
+        try {
+          const stats = fs.statSync(file.filename);
+          const lastModified = stats.mtimeMs;
+          
+          // Add to indexing queue if file is not indexed or outdated
+          if (!indexedFile || (indexedFile.last_indexed < lastModified)) {
+            filesToIndex.push({
+              filename: file.filename,
+              action: 'update'
+            });
+          }
+        } catch (fsError) {
+          log(`Error checking file stats for ${file.filename}: ${fsError.message}`, 'error');
+          // Skip this file
+        }
+      } catch (dbError) {
+        log(`Error checking indexed status for ${file.filename}: ${dbError.message}`, 'error');
+        // Skip this file
+      }
+    }
+    
+    if (filesToIndex.length > 0) {
+      log(`Queuing ${filesToIndex.length} files for background indexing`);
+      
+      // Add indexing tasks to the background queue
+      for (const file of filesToIndex) {
+        backgroundTasks.addTask(indexCodeFile, file.filename, file.action);
+      }
+    } else {
+      log('No files need indexing at this time');
+    }
+  } catch (error) {
+    log(`Error in triggerCodeIndexing: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * Extract code blocks from markdown-style text
+ * @param {string} text - Text that may contain code blocks
+ * @returns {Array} Array of extracted code blocks with language info
+ */
+function extractCodeBlocks(text) {
+  if (!text) return [];
+  
+  const codeBlockRegex = /```([a-z]*)\n([\s\S]*?)```/g;
+  const blocks = [];
+  let match;
+  
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    blocks.push({
+      language: match[1] || 'text',
+      content: match[2].trim()
+    });
+  }
+  
+  // Also look for code patterns in regular text if no code blocks found
+  if (blocks.length === 0 && isCodeRelatedQuery(text)) {
+    // Split by lines and look for coherent code segments
+    const lines = text.split('\n');
+    let codeSegment = '';
+    let inCode = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      // Simple heuristic: indented lines or lines with code-like symbols are likely code
+      const isCodeLine = /^\s{2,}|[{}\[\]();]|function\s+\w+\s*\(|if\s*\(|for\s*\(/.test(line);
+      
+      if (isCodeLine) {
+        if (!inCode) {
+          inCode = true;
+          codeSegment = line;
+        } else {
+          codeSegment += '\n' + line;
+        }
+      } else if (inCode && line === '') {
+        // Empty line, might be within code block
+        codeSegment += '\n';
+      } else if (inCode) {
+        // End of code segment
+        if (codeSegment.length > 0) {
+          blocks.push({
+            language: 'text',
+            content: codeSegment.trim()
+          });
+        }
+        inCode = false;
+        codeSegment = '';
+      }
+    }
+    
+    // Add final code segment if we ended while still in code
+    if (inCode && codeSegment.length > 0) {
+      blocks.push({
+        language: 'text',
+        content: codeSegment.trim()
+      });
+    }
+  }
+  
+  return blocks;
+}
+
+/**
+ * Performs maintenance of vector indexes and database optimization
+ * Handles: rebuilding indexes, cleaning orphaned vectors, and optimizing storage
+ * Designed to run periodically or during system idle time
+ * 
+ * @param {Object} options - Maintenance options
+ * @param {boolean} options.forceRebuild - Force rebuild of indexes even if not needed
+ * @param {boolean} options.cleanOrphans - Remove vectors without corresponding content
+ * @param {boolean} options.optimizeStorage - Merge similar vectors to reduce storage
+ * @returns {Promise<Object>} Maintenance results
+ */
+async function performVectorMaintenance(options = {}) {
+  const defaults = {
+    forceRebuild: false,
+    cleanOrphans: true,
+    optimizeStorage: true
+  };
+  
+  const opts = { ...defaults, ...options };
+  const results = {
+    indexesRebuilt: false,
+    orphansRemoved: 0,
+    vectorsOptimized: 0,
+    errors: []
+  };
+  
+  log('Starting vector maintenance tasks');
+  
+  try {
+    if (!db || useInMemory) {
+      throw new Error('Database not available or using in-memory storage');
+    }
+    
+    // 1. Check and rebuild vector indexes if needed
+    if (opts.forceRebuild) {
+      log('Force rebuilding vector indexes');
+      try {
+        // Drop existing vector index
+        await db.prepare('DROP INDEX IF EXISTS idx_vectors_vector').run();
+        log('Dropped existing vector index');
+        
+        // Recreate vector indexes
+        await createVectorIndexes();
+        results.indexesRebuilt = true;
+        log('Vector indexes rebuilt successfully');
+      } catch (rebuildError) {
+        const errMsg = `Error rebuilding vector indexes: ${rebuildError.message}`;
+        log(errMsg, 'error');
+        results.errors.push(errMsg);
+      }
+    }
+    
+    // 2. Clean up orphaned vectors whose source content has been deleted
+    if (opts.cleanOrphans) {
+      log('Cleaning up orphaned vectors');
+      try {
+        // Find vectors referencing non-existent messages
+        let deletedCount = 0;
+        const orphanedMessageVectors = await db.prepare(`
+          SELECT v.id, v.content_id, v.content_type 
+          FROM vectors v
+          LEFT JOIN messages m ON v.content_id = m.id AND v.content_type IN ('user_message', 'assistant_message', 'assistant_code_snippet')
+          WHERE v.content_type IN ('user_message', 'assistant_message', 'assistant_code_snippet')
+          AND m.id IS NULL
+        `).all();
+        
+        if (orphanedMessageVectors.length > 0) {
+          log(`Found ${orphanedMessageVectors.length} orphaned message vectors`);
+          for (const vector of orphanedMessageVectors) {
+            await db.prepare('DELETE FROM vectors WHERE id = ?').run(vector.id);
+            deletedCount++;
+          }
+        }
+        
+        // Find vectors referencing non-existent code files
+        const orphanedFileVectors = await db.prepare(`
+          SELECT v.id, v.content_id, v.content_type 
+          FROM vectors v
+          LEFT JOIN code_files f ON v.content_id = f.id AND v.content_type = 'code_file'
+          WHERE v.content_type = 'code_file'
+          AND f.id IS NULL
+        `).all();
+        
+        if (orphanedFileVectors.length > 0) {
+          log(`Found ${orphanedFileVectors.length} orphaned code file vectors`);
+          for (const vector of orphanedFileVectors) {
+            await db.prepare('DELETE FROM vectors WHERE id = ?').run(vector.id);
+            deletedCount++;
+          }
+        }
+        
+        // Find vectors referencing non-existent code snippets
+        const orphanedSnippetVectors = await db.prepare(`
+          SELECT v.id, v.content_id, v.content_type 
+          FROM vectors v
+          LEFT JOIN code_snippets s ON v.content_id = s.id AND v.content_type = 'code_snippet'
+          WHERE v.content_type = 'code_snippet'
+          AND s.id IS NULL
+        `).all();
+        
+        if (orphanedSnippetVectors.length > 0) {
+          log(`Found ${orphanedSnippetVectors.length} orphaned code snippet vectors`);
+          for (const vector of orphanedSnippetVectors) {
+            await db.prepare('DELETE FROM vectors WHERE id = ?').run(vector.id);
+            deletedCount++;
+          }
+        }
+        
+        results.orphansRemoved = deletedCount;
+        log(`Removed ${deletedCount} orphaned vectors`);
+      } catch (cleanupError) {
+        const errMsg = `Error cleaning up orphaned vectors: ${cleanupError.message}`;
+        log(errMsg, 'error');
+        results.errors.push(errMsg);
+      }
+    }
+    
+    // 3. Optimize vector storage by merging highly similar vectors for the same content
+    if (opts.optimizeStorage) {
+      log('Optimizing vector storage');
+      try {
+        // Find duplicate vectors for the same content (by content_id and content_type)
+        // Keep the most recent one and remove others
+        const duplicates = await db.prepare(`
+          SELECT content_id, content_type, COUNT(*) as count
+          FROM vectors
+          GROUP BY content_id, content_type
+          HAVING COUNT(*) > 1
+        `).all();
+        
+        let optimizedCount = 0;
+        
+        for (const dup of duplicates) {
+          // Get all vectors for this content, ordered by creation time (newest first)
+          const vectors = await db.prepare(`
+            SELECT id, created_at
+            FROM vectors
+            WHERE content_id = ? AND content_type = ?
+            ORDER BY created_at DESC
+          `).all(dup.content_id, dup.content_type);
+          
+          // Keep the newest one, delete the rest
+          for (let i = 1; i < vectors.length; i++) {
+            await db.prepare('DELETE FROM vectors WHERE id = ?').run(vectors[i].id);
+            optimizedCount++;
+          }
+        }
+        
+        results.vectorsOptimized = optimizedCount;
+        log(`Optimized storage by removing ${optimizedCount} redundant vectors`);
+      } catch (optimizeError) {
+        const errMsg = `Error optimizing vector storage: ${optimizeError.message}`;
+        log(errMsg, 'error');
+        results.errors.push(errMsg);
+      }
+    }
+    
+    log('Vector maintenance tasks completed');
+    return results;
+  } catch (error) {
+    const errMsg = `Vector maintenance failed: ${error.message}`;
+    log(errMsg, 'error');
+    results.errors.push(errMsg);
+    return results;
+  }
+}
+
+/**
+ * Schedule periodic vector maintenance to run at regular intervals
+ * @param {number} intervalMinutes - Interval in minutes between maintenance runs
+ */
+function scheduleVectorMaintenance(intervalMinutes = 60) {
+  // Don't schedule if we're in in-memory mode
+  if (useInMemory) {
+    log('Not scheduling vector maintenance for in-memory mode');
+    return;
+  }
+  
+  log(`Scheduling vector maintenance to run every ${intervalMinutes} minutes`);
+  
+  // Set up recurring maintenance
+  const interval = intervalMinutes * 60 * 1000; // Convert to milliseconds
+  
+  setInterval(async () => {
+    log('Running scheduled vector maintenance');
+    try {
+      // Add to background tasks queue to avoid blocking
+      backgroundTasks.addTask(async () => {
+        await performVectorMaintenance();
+      });
+    } catch (error) {
+      log(`Error scheduling vector maintenance: ${error.message}`, 'error');
+    }
+  }, interval);
+  
+  // Also run once at startup after a delay to allow system to initialize
+  setTimeout(() => {
+    log('Running initial vector maintenance');
+    backgroundTasks.addTask(async () => {
+      await performVectorMaintenance();
+    });
+  }, 30000); // 30 seconds after startup
+}
+
+// Schedule vector maintenance when the system starts
+scheduleVectorMaintenance();

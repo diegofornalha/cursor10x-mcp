@@ -10,7 +10,7 @@ A comprehensive memory system for Cursor using the Model Context Protocol (MCP).
 
 <p align="center">
   <img src="https://img.shields.io/badge/Status-Active-brightgreen" alt="Active">
-  <img src="https://img.shields.io/badge/Version-1.0.1-blue" alt="Version 1.0.1">
+  <img src="https://img.shields.io/badge/Version-1.3.0-blue" alt="Version 1.3.0">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License">
 </p>
 
@@ -31,12 +31,16 @@ A comprehensive memory system for Cursor using the Model Context Protocol (MCP).
 
 Discover the full autonomous development ecosystem at [GitHub](https://github.com/aurda012/cursor10x) featuring:
 
-- **📋 Task Management System** - Guided implementation with step-by-step tasks
-- **🔄 Autonomous Memory** - Context-aware AI that remembers your entire project
-- **📊 Project Blueprints** - Complete technical architectures created for your specifications
-- **📁 File/Folder Architecture** - Optimized project structure with best practices
-- **📘 Implementation Guide** - Comprehensive documentation for all files and components
-- **📝 Detailed Tasks** - Complete workflow from project initiation to completion
+**📋 Task Management System** - Guided implementation with step-by-step tasks
+**🔄 Autonomous Memory** - Context-aware AI that remembers your entire project
+**📊 Project Blueprints** - Complete technical architectures created for your specifications
+**📁 File/Folder Architecture** - Optimized project structure with best practices
+**📘 Implementation Guide** - Comprehensive documentation for all files and components
+**📝 Detailed Tasks** - Complete workflow from project initiation to completion
+**🔍 Vector-Based Search** - Semantic search across your codebase and conversations
+**🧩 Code Indexing** - Automatic detection and indexing of code structures
+**🔎 Semantic Code Retrieval** - Find related code by meaning rather than exact matches
+**🤖 Automatic Code Analysis** - Extract functions, classes, and variables with context
 
 <p align="center">
   <a href="https://cursor10x.com" style="display: inline-block; background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">Visit cursor10x.com</a>
@@ -57,20 +61,25 @@ The Cursor10x Memory System creates a persistent memory layer for AI assistants 
 - Important project milestones and decisions
 - Technical requirements and specifications
 - Chronological sequences of actions and events (episodes)
+- Code snippets and structures from your codebase
+- Semantically similar content based on vector embeddings
+- Related code fragments through semantic similarity
+- File structures with function and variable relationships
 
 This memory system bridges the gap between stateless AI interactions and continuous development workflows, allowing for more productive and contextually aware assistance.
 
 ## System Architecture
 
-The memory system is built on three core components:
+The memory system is built on four core components:
 
 1. **MCP Server**: Implements the Model Context Protocol to register tools and process requests
 2. **Memory Database**: Uses Turso database for persistent storage across sessions
 3. **Memory Subsystems**: Organizes memory into specialized systems with distinct purposes
+4. **Vector Embeddings**: Transforms text and code into numerical representations for semantic search
 
 ### Memory Types
 
-The system implements three complementary memory types:
+The system implements four complementary memory types:
 
 1. **Short-Term Memory (STM)**
    - Stores recent messages and active files
@@ -87,15 +96,29 @@ The system implements three complementary memory types:
    - Maintains causal relationships between actions
    - Provides temporal context for project history
 
+4. **Semantic Memory**
+   - Stores vector embeddings of messages, files, and code snippets
+   - Enables retrieval of content based on semantic similarity
+   - Automatically indexes code structures for contextual retrieval
+   - Tracks relationships between code components
+   - Provides similarity-based search across the codebase
+
 ## Features
 
 - **Persistent Context**: Maintains conversation and project context across multiple sessions
 - **Importance-Based Storage**: Prioritizes information based on configurable importance levels
-- **Multi-Dimensional Memory**: Combines short-term, long-term, and episodic memory systems
+- **Multi-Dimensional Memory**: Combines short-term, long-term, episodic, and semantic memory systems
 - **Comprehensive Retrieval**: Provides unified context from all memory subsystems
 - **Health Monitoring**: Includes built-in diagnostics and status reporting
 - **Banner Generation**: Creates informative context banners for conversation starts
 - **Database Persistence**: Stores all memory data in Turso database with automatic schema creation
+- **Vector Embeddings**: Creates numerical representations of text and code for similarity search
+- **Code Indexing**: Automatically detects and indexes code structures (functions, classes, variables)
+- **Semantic Search**: Finds related content based on meaning rather than exact text matches
+- **Relevance Scoring**: Ranks context items by relevance to the current query
+- **Code Structure Detection**: Identifies and extracts code components across multiple languages
+- **Auto-Embedding Generation**: Automatically creates vector embeddings for indexed content
+- **Cross-Reference Retrieval**: Finds related code across different files and components
 
 ## Tool Documentation
 
@@ -623,226 +646,68 @@ const episodes = await mcp_cursor10x_getRecentEpisodes({
 // }
 ```
 
-## EXAMPLE CUSTOM INSTRUCTIONS
+### Vector-Based Memory Tools
 
-```
-# CURSOR10X MEMORY SYSTEM ENFORCEMENT RULES
-# These rules MUST be followed ALWAYS without exception.
+#### `mcp_cursor10x_manageVector`
 
-## RULE 1: CONVERSATION INITIALIZATION
-The FIRST action in the BEGINNING of EVERY response MUST be to initialize the conversation with this single tool call and display the banner from the response immediately after. It should not be called throughout the conversation response, ONLY right after the user's input:
-mcp_cursor10x_initConversation({content: "[user message]", importance: "[low/medium/high/critical]"})
+Unified tool for managing vector embeddings with operations for store, search, update, and delete.
 
-## RULE 2: ASSISTANT MESSAGE STORAGE
-EVERY assistant response containing important information MUST be stored:
-mcp_cursor10x_storeAssistantMessage({content: "[assistant response]", importance: "[low/medium/high/critical]"})
+**Parameters:**
+- `operation` (string, required): Operation to perform ("store", "search", "update", "delete")
+- `contentId` (number, optional): ID of the content this vector represents (for store, update, delete)
+- `contentType` (string, optional): Type of content ("message", "file", "snippet", etc.)
+- `vector` (array, optional): Vector data as array of numbers (for store, update) or query vector (for search)
+- `vectorId` (number, optional): ID of the vector to update or delete
+- `limit` (number, optional): Maximum number of results for search operation, defaults to 10
+- `threshold` (number, optional): Similarity threshold for search operation, defaults to 0.7
+- `metadata` (object, optional): Additional info about the vector
 
-## RULE 3: ACTIVE FILE TRACKING
-EVERY file being worked on or modified MUST be tracked - not files being read:
-mcp_cursor10x_trackActiveFile({filename: "[file path]", action: "[view/edit/create/close]"})
+**Returns:**
+- Object with status and operation results
 
-## RULE 4: MILESTONE RECORDING
-ALL completed tasks or achievements MUST be recorded as milestones:
-mcp_cursor10x_storeMilestone({title: "[milestone title]", description: "[milestone description]", importance: "[low/medium/high/critical]"})
-
-## RULE 5: DECISION RECORDING
-ALL important project decisions MUST be recorded:
-mcp_cursor10x_storeDecision({title: "[decision title]", content: "[decision content]", reasoning: "[decision reasoning]", importance: "[low/medium/high/critical]"})
-
-## RULE 6: REQUIREMENT RECORDING
-ALL project requirements MUST be documented:
-mcp_cursor10x_storeRequirement({title: "[requirement title]", content: "[requirement content]", importance: "[low/medium/high/critical]"})
-
-## RULE 7: EPISODE RECORDING
-ALL significant events or actions MUST be recorded as episodes:
-mcp_cursor10x_recordEpisode({actor: "[user/assistant/system]", action: "[action type]", content: "[action details]", importance: "[low/medium/high/critical]"})
-
-## RULE 8: CONVERSATION END SEQUENCE
-This EXACT sequence MUST be executed at the VERY END of EVERY conversation:
-EITHER use the combined end conversation tool:
-mcp_cursor10x_endConversation({content: "[final response summary]", milestone_title: "Conversation Completion", milestone_description: "[what was accomplished]", importance: "medium"})
-
-OR use the separate tools in sequence:
-1. mcp_cursor10x_storeAssistantMessage({content: "[final response summary]", importance: "medium"})
-2. mcp_cursor10x_storeMilestone({title: "Conversation Completion", description: "[what was accomplished]", importance: "medium"})
-3. mcp_cursor10x_recordEpisode({actor: "assistant", action: "completion", content: "[conversation summary]", importance: "medium"})
-
-## RULE 9: HEALTH MONITORING
-Memory system health MUST be checked when issues occur:
-mcp_cursor10x_checkHealth({})
-
-## RULE 10: MEMORY STATISTICS
-Memory statistics MUST be gathered periodically:
-mcp_cursor10x_getMemoryStats({})
-```
-
-## Installation
-
-### Prerequisites
-
-- Node.js 18 or higher
-- npm or yarn package manager
-- Turso database account or SQLite for local development
-
-### Setting Up Turso Database
-
-The memory system uses Turso (LibSQL) for database storage. To set up your Turso database:
-
-1. **Create a Turso account**
-   
-   Sign up at [Turso.tech](https://turso.tech) if you don't have an account.
-
-2. **Install the Turso CLI**
-
-```bash
-   curl -sSfL https://get.turso.tech/install.sh | bash
-```
-
-3. **Login to Turso**
-
-```bash
-   turso auth login
-```
-
-4. **Create a database**
-
-```bash
-   turso db create cursor10x-mcp
-   ```
-
-5. **Get your database URL**
-   
-   ```bash
-   turso db show cursor10x-mcp --url
-   ```
-
-6. **Create an authentication token**
-   
-   ```bash
-   turso db tokens create cursor10x-mcp
-   ```
-
-Save both the database URL and authentication token for use in the configuration.
-
-### Step-by-Step Installation
-
-1. **Install the package from npm**
-   ```bash
-   npm install -g cursor10x-mcp
-   ```
-
-2. **Create the Cursor MCP configuration**
-   
-   Create or edit the `.cursor/mcp.json` file in your home directory:
-   
-   ```bash
-   mkdir -p ~/.cursor
-   touch ~/.cursor/mcp.json
-   ```
-   
-   Add the following configuration to the file:
-   
-   ```json
-   {
-     "mcpServers": {
-       "cursor10x-mcp": {
-         "command": "npx",
-         "args": [
-           "cursor10x-mcp"
-         ],
-         "enabled": true,
-         "env": {
-           "TURSO_DATABASE_URL": "your-turso-database-url",
-           "TURSO_AUTH_TOKEN": "your-turso-auth-token"
-         }
-       }
-     }
-   }
-   ```
-   
-   Make sure to use your actual Turso credentials.
-
-3. **Restart Cursor**
-   
-   After saving the configuration, restart Cursor to load the memory system.
-
-4. **Verify Installation**
-   
-   Test the installation by asking Claude to run the `mcp_cursor10x_generateBanner` tool.
-
-### For Developers
-
-If you want to work on cursor10x-mcp development:
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/your-username/cursor10x-mcp.git
-   cd cursor10x-mcp
-   ```
-
-2. **Install dependencies**
-```bash
-   npm install
-   ```
-
-3. **Create a .env.local file with your Turso credentials**
-   ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your actual credentials
-   ```
-
-4. **Run in development mode**
-```bash
-npm run dev
-```
-
-5. **Build and publish to npm**
-   ```bash
-   # Update package.json with your information
-   npm run build
-   npm publish
-   ```
-
-## Configuration
-
-### Environment Variables
-
-The memory system can be configured using the following environment variables:
-
-- `TURSO_DATABASE_URL`: URL for the Turso database connection (required)
-- `TURSO_AUTH_TOKEN`: Authentication token for Turso database access (required)
-- `MCP_LOG_LEVEL`: Logging level ("error", "warn", "info", "debug"), defaults to "info"
-- `MCP_PORT`: Port for the MCP server if using HTTP transport, defaults to 3000
-
-### Configuration in Cursor
-
-Add the memory system configuration to your `.cursor/mcp.json` file:
-
-```json
-{
-  "mcpServers": {
-    "cursor10x-mcp": {
-      "command": "node",
-      "args": [
-        "/path/to/your/cursor10x-mcp/index.js"
-      ],
-      "enabled": true,
-      "env": {
-        "TURSO_DATABASE_URL": "your-turso-database-url",
-        "TURSO_AUTH_TOKEN": "your-turso-auth-token"
-      }
-    }
+**Example:**
+```javascript
+// Store a vector embedding
+const result = await mcp_cursor10x_manageVector({
+  operation: "store",
+  contentId: 42,
+  contentType: "message",
+  vector: [0.1, 0.2, 0.3, ...], // 128-dimensional vector
+  metadata: {
+    topic: "authentication",
+    language: "en"
   }
-}
+});
+// Result: {
+//   "status": "ok",
+//   "operation": "store",
+//   "vectorId": 15,
+//   "timestamp": 1681570000123
+// }
+
+// Search for similar vectors
+const searchResult = await mcp_cursor10x_manageVector({
+  operation: "search",
+  vector: [0.1, 0.2, 0.3, ...], // query vector
+  contentType: "snippet", // optional filter
+  limit: 5,
+  threshold: 0.8
+});
+// Result: {
+//   "status": "ok",
+//   "operation": "search",
+//   "results": [
+//     {
+//       "vectorId": 10,
+//       "contentId": 30,
+//       "contentType": "snippet",
+//       "similarity": 0.92,
+//       "metadata": { ... }
+//     },
+//     ...
+//   ]
+// }
 ```
-
-Make sure to:
-1. Replace `/path/to/your/cursor10x-mcp/index.js` with the actual path to your index.js file
-2. Replace `your-turso-database-url` with your Turso database URL
-3. Replace `your-turso-auth-token` with your Turso authentication token
-4. Create the `.cursor` directory in your home directory if it doesn't exist yet
-
-You can verify the configuration by checking if Claude can access the memory tools after restarting Cursor.
 
 ## Database Schema
 
@@ -892,6 +757,28 @@ The memory system automatically creates and maintains the following database tab
   - `content`: Action details
   - `importance`: Importance level
   - `context`: Action context
+
+- `vectors`: Stores vector embeddings for semantic search
+  - `id`: Unique identifier
+  - `content_id`: ID of the referenced content
+  - `content_type`: Type of content (message, file, snippet)
+  - `vector`: Binary representation of the embedding vector
+  - `metadata`: Additional metadata for the vector
+
+- `code_files`: Tracks indexed code files
+  - `id`: Unique identifier
+  - `file_path`: Path to the file
+  - `language`: Programming language
+  - `last_indexed`: Timestamp of last indexing
+  - `metadata`: Additional file metadata
+
+- `code_snippets`: Stores extracted code structures
+  - `id`: Unique identifier
+  - `file_id`: Reference to the parent file
+  - `start_line`: Starting line number
+  - `end_line`: Ending line number
+  - `symbol_type`: Type of code structure (function, class, variable)
+  - `content`: The code snippet content
 
 ## Example Workflows
 
@@ -990,44 +877,3 @@ When storing items in memory, use appropriate importance levels:
 ## License
 
 MIT
-
-## Available Tools
-
-### Short-Term Memory Tools
-
-- `mcp_cursor10x_initConversation`: Initializes a conversation by storing the user message, generating a banner, and retrieving context in one operation
-  - Parameters:
-    - `content` (required): Content of the user message
-    - `importance` (optional, default: "low"): Importance level (low, medium, high, critical)
-    - `metadata` (optional): Additional metadata for the message
-  - Returns: An object containing the banner and context
-
-- `mcp_cursor10x_storeUserMessage`: Stores a user message in the short-term memory
-  - Parameters:
-    - `content` (required): Content of the message
-    - `importance` (optional, default: "low"): Importance level (low, medium, high, critical)
-    - `metadata` (optional): Additional metadata for the message
-  - Returns: The stored message ID
-
-### System Tools
-
-- `mcp_cursor10x_endConversation`: Finalizes a conversation by storing the assistant's final message, recording a milestone, and logging an episode in episodic memory
-  - Parameters:
-    - `content` (required): Content of the assistant's final message
-    - `milestone_title` (required): Title for the completion milestone
-    - `milestone_description` (required): Description of what was accomplished
-    - `importance` (optional, default: "medium"): Importance level (low, medium, high, critical)
-    - `metadata` (optional): Additional metadata for the operations
-  - Returns: Object with the status and results of each operation
-
-- `mcp_cursor10x_generateBanner`: Generates a banner containing memory system statistics and status
-  - Parameters: None
-  - Returns: A formatted banner with memory system information
-
-- `mcp_cursor10x_checkHealth`: Checks the health of the memory system and its database
-  - Parameters: None
-  - Returns: Health status information
-
-- `mcp_cursor10x_getMemoryStats`: Retrieves statistics about the memory system
-  - Parameters: None
-  - Returns: Statistics about messages, active files, and other memory components
