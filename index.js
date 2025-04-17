@@ -121,7 +121,15 @@ async function createEmbedding(text, dimensions = 128) {
       vector[i] = Math.tanh(value);
     }
     
-    // Log and return the vector
+    // Ensure values are in a good range for cosine similarity
+    // Normalize the vector to unit length which is best for cosine similarity
+    const magnitude = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+    if (magnitude > 0) {
+      for (let i = 0; i < dimensions; i++) {
+        vector[i] = vector[i] / magnitude;
+      }
+    }
+    
     logDebug(`Generated ${dimensions}-d embedding for text`);
     return vector;
   } catch (error) {
@@ -138,17 +146,140 @@ async function createEmbedding(text, dimensions = 128) {
  * @returns {Buffer} Buffer representation of the vector
  */
 function vectorToBuffer(vector) {
-  return Buffer.from(vector.buffer);
+  try {
+    // Get the vector dimensions from environment or default to 128
+    const DEFAULT_VECTOR_DIMS = 128;
+    const configuredDims = process.env.VECTOR_DIMENSIONS ? 
+      parseInt(process.env.VECTOR_DIMENSIONS, 10) : DEFAULT_VECTOR_DIMS;
+    
+    // Check if the vector dimensions match the configured dimensions
+    if (vector.length !== configuredDims) {
+      log(`VECTOR WARNING: Vector dimension mismatch. Expected ${configuredDims}, got ${vector.length}`, "error");
+      
+      // Adjust vector dimensions if needed
+      if (vector.length < configuredDims) {
+        // Pad with zeros if too short
+        const paddedVector = new Float32Array(configuredDims);
+        paddedVector.set(vector);
+        vector = paddedVector;
+        log(`VECTOR DEBUG: Padded vector to ${configuredDims} dimensions`, "info");
+      } else if (vector.length > configuredDims) {
+        // Truncate if too long
+        vector = vector.slice(0, configuredDims);
+        log(`VECTOR DEBUG: Truncated vector to ${configuredDims} dimensions`, "info");
+      }
+    }
+    
+    // Convert Float32Array to a string representation for vector32()
+    const vectorString = '[' + Array.from(vector).join(', ') + ']';
+    
+    // Try using the new Turso vector32 function
+    if (db) {
+      try {
+        const result = db.prepare(`SELECT vector32(?) AS vec`).get(vectorString);
+        if (result && result.vec) {
+          return result.vec;
+        }
+      } catch (vector32Error) {
+        log(`VECTOR WARNING: vector32 function failed: ${vector32Error.message}`, "error");
+        
+        // Try fallback with explicit dimensions parameter
+        try {
+          const resultWithDims = db.prepare(`SELECT vector32(?, ${configuredDims}) AS vec`).get(vectorString);
+          if (resultWithDims && resultWithDims.vec) {
+            return resultWithDims.vec;
+          }
+        } catch (dimError) {
+          log(`VECTOR WARNING: vector32 with dimensions parameter failed: ${dimError.message}`, "error");
+        }
+      }
+    }
+    
+    // If Turso's vector32 is not available or fails, fall back to direct buffer conversion
+    log(`VECTOR DEBUG: Falling back to direct buffer conversion`, "info");
+    return Buffer.from(vector.buffer);
+  } catch (error) {
+    log(`VECTOR ERROR: Error converting vector to buffer: ${error.message}`, "error");
+    // Fallback to direct buffer conversion
+    return Buffer.from(vector.buffer);
+  }
 }
 
 /**
- * Convert a Buffer back to a Float32Array
+ * Convert a buffer from database back to Float32Array
  * 
- * @param {Buffer} buffer - Buffer to convert
- * @returns {Float32Array} Float32Array representation
+ * @param {Buffer} buffer - Buffer from database
+ * @returns {Float32Array} Vector representation
  */
 function bufferToVector(buffer) {
-  return new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
+  try {
+    if (!buffer) {
+      log("VECTOR ERROR: Null buffer passed to bufferToVector", "error");
+      return new Float32Array(0);
+    }
+    
+    // Get the expected vector dimensions
+    const DEFAULT_VECTOR_DIMS = 128;
+    const configuredDims = process.env.VECTOR_DIMENSIONS ? 
+      parseInt(process.env.VECTOR_DIMENSIONS, 10) : DEFAULT_VECTOR_DIMS;
+    
+    // Try to use Turso's vector_to_json function first for better F32_BLOB handling
+    if (db) {
+      try {
+        // Use the built-in vector_to_json function
+        const result = db.prepare(`SELECT vector_to_json(?) AS vec_json`).get(buffer);
+        if (result && result.vec_json) {
+          try {
+            // Parse the JSON string to get the vector values
+            const vectorValues = JSON.parse(result.vec_json);
+            if (Array.isArray(vectorValues)) {
+              return new Float32Array(vectorValues);
+            }
+          } catch (jsonError) {
+            log(`VECTOR WARNING: Failed to parse vector_to_json result: ${jsonError.message}`, "error");
+          }
+        }
+      } catch (functionError) {
+        log(`VECTOR DEBUG: vector_to_json function not available: ${functionError.message}`, "info");
+      }
+    }
+    
+    // If Turso's function fails, use standard buffer conversion
+    // Check if the buffer length matches what we expect for a Float32Array
+    const expectedByteLength = 4 * configuredDims; // 4 bytes per float32
+    
+    if (buffer.length !== expectedByteLength) {
+      log(`VECTOR WARNING: Buffer size mismatch. Expected ${expectedByteLength} bytes, got ${buffer.length}`, "error");
+      
+      // Try to interpret as Float32Array anyway, resulting in potentially wrong dimensions
+      const floatArray = new Float32Array(buffer.buffer, buffer.byteOffset, Math.floor(buffer.length / 4));
+      
+      // Adjust to the expected dimensions
+      if (floatArray.length !== configuredDims) {
+        log(`VECTOR WARNING: Converted vector has ${floatArray.length} dimensions, expected ${configuredDims}`, "error");
+        
+        // Create a properly sized array
+        const properVector = new Float32Array(configuredDims);
+        
+        // Copy values, truncating or padding as needed
+        const copyLength = Math.min(floatArray.length, configuredDims);
+        for (let i = 0; i < copyLength; i++) {
+          properVector[i] = floatArray[i];
+        }
+        
+        return properVector;
+      }
+      
+      return floatArray;
+    }
+    
+    // Normal case - buffer size matches expectations
+    return new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
+  } catch (error) {
+    log(`VECTOR ERROR: Error converting buffer to vector: ${error.message}`, "error");
+    // Return an empty vector on error
+    return new Float32Array(0);
+  }
 }
 
 /**
@@ -163,27 +294,70 @@ function bufferToVector(buffer) {
 async function storeEmbedding(contentId, contentType, vector, metadata = null) {
   try {
     if (!db) {
+      log("ERROR: Database not initialized in storeEmbedding", "error");
       throw new Error("Database not initialized");
     }
     
-    // Convert the Float32Array to a buffer for storage
-    const vectorBuffer = vectorToBuffer(vector);
+    // Convert the Float32Array to a string representation for vector32()
+    const vectorString = '[' + Array.from(vector).join(', ') + ']';
     const now = Date.now();
     
-    // Store in the vectors table
-    const result = await db.prepare(`
-      INSERT INTO vectors (content_id, content_type, vector, created_at, metadata)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      contentId,
-      contentType,
-      vectorBuffer,
-      now,
-      metadata ? JSON.stringify(metadata) : null
-    );
+    // Detailed logging for debugging vector storage issues
+    log(`VECTOR DEBUG: Attempting to store vector for ${contentType} with ID ${contentId}`, "info");
+    log(`VECTOR DEBUG: Vector dimensions: ${vector.length}, Vector string: ${vectorString.substring(0, 30)}...`, "info");
     
-    logDebug(`Stored ${vector.length}-d vector for ${contentType} with ID ${contentId}`);
-    return result;
+    // Store in the vectors table using vector32() function
+    try {
+      // First check if the table has F32_BLOB column
+      const tableInfo = await db.prepare("PRAGMA table_info(vectors)").all();
+      const vectorColumn = tableInfo.find(col => col.name === 'vector');
+      const isF32Blob = vectorColumn && vectorColumn.type.includes('F32_BLOB');
+      
+      let result;
+      
+      if (isF32Blob) {
+        // Use vector32 function for F32_BLOB column
+        result = await db.prepare(`
+          INSERT INTO vectors (content_id, content_type, vector, created_at, metadata)
+          VALUES (?, ?, vector32(?), ?, ?)
+        `).run(
+          contentId,
+          contentType,
+          vectorString,
+          now,
+          metadata ? JSON.stringify(metadata) : null
+        );
+      } else {
+        // Fall back to BLOB for old schema
+        const vectorBuffer = vectorToBuffer(vector);
+        result = await db.prepare(`
+          INSERT INTO vectors (content_id, content_type, vector, created_at, metadata)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          contentId,
+          contentType,
+          vectorBuffer,
+          now,
+          metadata ? JSON.stringify(metadata) : null
+        );
+      }
+      
+      log(`VECTOR SUCCESS: Stored ${vector.length}-d vector for ${contentType} with ID ${contentId}`, "info");
+      
+      // Verify storage by trying to read it back
+      const verification = await db.prepare(`
+        SELECT id FROM vectors 
+        WHERE content_id = ? AND content_type = ?
+        ORDER BY created_at DESC LIMIT 1
+      `).get(contentId, contentType);
+      
+      log(`VECTOR VERIFICATION: Read back vector with database ID ${verification?.id || 'not found'}`, "info");
+      
+      return result;
+    } catch (dbError) {
+      log(`VECTOR ERROR: Database error while storing vector: ${dbError.message}`, "error");
+      throw dbError;
+    }
   } catch (error) {
     log(`Error storing embedding: ${error.message}`, "error");
     throw error;
@@ -205,10 +379,73 @@ async function findSimilarVectors(queryVector, contentType = null, limit = 10, t
       throw new Error("Database not initialized");
     }
     
-    // Convert the query vector to a buffer
-    const queryBuffer = vectorToBuffer(queryVector);
+    // Convert the query vector to string format for vector32
+    const vectorString = '[' + Array.from(queryVector).join(', ') + ']';
     
-    // First try to use Turso's vector_top_k for efficient similarity search
+    // First, try to use vector_top_k with ANN index for optimal performance
+    try {
+      // Check if vector_top_k is available
+      let hasVectorTopK = false;
+      try {
+        await db.prepare("SELECT 1 FROM vector_top_k('idx_vectors_ann', vector32('[0.1, 0.2, 0.3]'), 1) LIMIT 0").all();
+        hasVectorTopK = true;
+        log(`VECTOR DEBUG: vector_top_k function available`, "info");
+      } catch (topkError) {
+        hasVectorTopK = false;
+        log(`VECTOR DEBUG: vector_top_k function not available: ${topkError.message}`, "info");
+      }
+      
+      if (hasVectorTopK) {
+        log(`VECTOR DEBUG: Running ANN similarity search with vector_top_k`, "info");
+        
+        // Build the query based on whether contentType is specified
+        let sql;
+        let params;
+        
+        if (contentType) {
+          sql = `
+            SELECT 
+              v.id, 
+              v.content_id, 
+              v.content_type, 
+              t.score AS similarity
+            FROM vector_top_k('idx_vectors_ann', vector32(?), ?) t
+            JOIN vectors v ON v.rowid = t.rowid
+            WHERE v.content_type = ?
+            AND t.score >= ?
+            ORDER BY t.score DESC
+          `;
+          params = [vectorString, limit * 2, contentType, threshold]; // Query more than needed to filter by content_type
+        } else {
+          sql = `
+            SELECT 
+              v.id, 
+              v.content_id, 
+              v.content_type, 
+              t.score AS similarity
+            FROM vector_top_k('idx_vectors_ann', vector32(?), ?) t
+            JOIN vectors v ON v.rowid = t.rowid
+            WHERE t.score >= ?
+            ORDER BY t.score DESC
+            LIMIT ?
+          `;
+          params = [vectorString, limit, threshold, limit];
+        }
+        
+        const results = await db.prepare(sql).all(...params);
+        
+        // If we found results, return them
+        if (results && results.length > 0) {
+          return results;
+        }
+        
+        log(`VECTOR DEBUG: No results with vector_top_k, falling back to distance calculation`, "info");
+      }
+    } catch (annError) {
+      log(`VECTOR WARNING: ANN search failed, falling back to cosine distance: ${annError.message}`, "error");
+    }
+    
+    // Fall back to vector_distance_cos if ANN search isn't available or returns no results
     try {
       // Build the query based on whether contentType is specified
       let sql;
@@ -216,31 +453,39 @@ async function findSimilarVectors(queryVector, contentType = null, limit = 10, t
       
       if (contentType) {
         sql = `
-          SELECT id, content_id, content_type, similarity
-          FROM vector_top_k('idx_vectors_vector', ?, ?) AS v
-          JOIN vectors ON vectors.id = v.rowid
+          SELECT 
+            id, 
+            content_id, 
+            content_type, 
+            (1 - vector_distance_cos(vector, vector32(?))) AS similarity
+          FROM vectors
           WHERE content_type = ?
-          AND similarity >= ?
+          AND (1 - vector_distance_cos(vector, vector32(?))) >= ?
+          ORDER BY similarity DESC
           LIMIT ?
         `;
-        params = [queryBuffer, limit * 2, contentType, threshold, limit];
+        params = [vectorString, contentType, vectorString, threshold, limit];
       } else {
         sql = `
-          SELECT id, content_id, content_type, similarity
-          FROM vector_top_k('idx_vectors_vector', ?, ?) AS v
-          JOIN vectors ON vectors.id = v.rowid
-          WHERE similarity >= ?
+          SELECT 
+            id, 
+            content_id, 
+            content_type, 
+            (1 - vector_distance_cos(vector, vector32(?))) AS similarity
+          FROM vectors
+          WHERE (1 - vector_distance_cos(vector, vector32(?))) >= ?
+          ORDER BY similarity DESC
           LIMIT ?
         `;
-        params = [queryBuffer, limit * 2, threshold, limit];
+        params = [vectorString, vectorString, threshold, limit];
       }
       
+      log(`VECTOR DEBUG: Running vector similarity search with vector_distance_cos`, "info");
       const results = await db.prepare(sql).all(...params);
       return results;
     } catch (vectorError) {
-      // If vector_top_k fails (e.g., not supported in this Turso version),
-      // fall back to a simple full table scan with manual similarity calculation
-      log(`Vector index search failed, falling back to full scan: ${vectorError.message}`, "error");
+      // If vector_distance_cos fails, fall back to manual calculation
+      log(`VECTOR WARNING: Vector function search failed, falling back to manual: ${vectorError.message}`, "error");
       
       // Get all vectors of the requested type
       let sql = 'SELECT id, content_id, content_type, vector FROM vectors';
@@ -309,8 +554,11 @@ function cosineSimilarity(a, b) {
 async function createVectorIndexes() {
   try {
     if (!db) {
+      log("ERROR: Database not initialized in createVectorIndexes", "error");
       throw new Error("Database not initialized");
     }
+    
+    log("VECTOR DEBUG: Starting vector index creation", "info");
     
     // Basic indexes for content lookup
     const basicIndexes = [
@@ -320,24 +568,91 @@ async function createVectorIndexes() {
     
     // Try to create the basic indexes
     for (const indexSQL of basicIndexes) {
-      await db.prepare(indexSQL).run();
+      try {
+        await db.prepare(indexSQL).run();
+        log(`VECTOR DEBUG: Created basic index with SQL: ${indexSQL}`, "info");
+      } catch (basicIndexError) {
+        log(`VECTOR ERROR: Failed to create basic index: ${basicIndexError.message}`, "error");
+        throw basicIndexError;  // Fail early if even basic indexes can't be created
+      }
     }
     
-    // Now try to create the vector index using libsql_vector_idx
+    // Now try to create the vector index using libsql_vector_idx with proper F32_BLOB column
     try {
-      const vectorIndexSQL = `
-        CREATE INDEX IF NOT EXISTS idx_vectors_vector ON vectors(libsql_vector_idx(vector)) WHERE vector IS NOT NULL
-      `;
-      await db.prepare(vectorIndexSQL).run();
-      log('Vector similarity index created successfully');
+      log("VECTOR DEBUG: Attempting to create Turso vector index", "info");
+      
+      // First check if the database supports vector indexing
+      try {
+        const versionCheck = await db.prepare("SELECT sqlite_version() as version").get();
+        log(`VECTOR DEBUG: SQLite version: ${versionCheck?.version || 'unknown'}`, "info");
+      } catch (versionError) {
+        log(`VECTOR DEBUG: Could not check SQLite version: ${versionError.message}`, "info");
+      }
+      
+      // Check if libsql_vector_idx is available
+      let hasVectorIdxFunction = false;
+      try {
+        const functionCheck = await db.prepare("SELECT typeof(libsql_vector_idx('dummy')) as type").get();
+        hasVectorIdxFunction = functionCheck && functionCheck.type !== 'null';
+        log(`VECTOR DEBUG: libsql_vector_idx function available: ${hasVectorIdxFunction}`, "info");
+      } catch (fnError) {
+        log(`VECTOR DEBUG: libsql_vector_idx function not available: ${fnError.message}`, "info");
+      }
+      
+      // Create optimized vector index using proper syntax based on Turso documentation
+      if (hasVectorIdxFunction) {
+        const vectorIndexSQL = `
+          CREATE INDEX IF NOT EXISTS idx_vectors_ann 
+          ON vectors(libsql_vector_idx(vector)) 
+          WHERE vector IS NOT NULL
+        `;
+        await db.prepare(vectorIndexSQL).run();
+        log('VECTOR SUCCESS: Turso ANN vector index created successfully', "info");
+        
+        // Set optimal vector index parameters for performance
+        try {
+          // Set the number of neighbors parameter for ANN index (trade-off between accuracy and performance)
+          await db.prepare("PRAGMA libsql_vector_neighbors = 20").run();
+          log('VECTOR SUCCESS: Set optimal ANN neighbors parameter', "info");
+        } catch (paramError) {
+          log(`VECTOR WARNING: Could not set ANN parameters: ${paramError.message}`, "error");
+        }
+      } else {
+        // Create simple index on vector column if ANN indexing not available
+        const vectorIndexSQL = `
+          CREATE INDEX IF NOT EXISTS idx_vectors_vector ON vectors(vector) WHERE vector IS NOT NULL
+        `;
+        await db.prepare(vectorIndexSQL).run();
+        log('VECTOR SUCCESS: Standard vector index created successfully', "info");
+      }
     } catch (vectorError) {
-      // Non-fatal - the system can still work without vector indexes
-      log(`Note: Could not create vector similarity index: ${vectorError.message}. Vector search will use full scans.`, "error");
+      log(`VECTOR WARNING: Could not create vector index: ${vectorError.message}`, "error");
+      log('VECTOR WARNING: Vector search will use full table scans which may be slower', "error");
+      
+      // Try a more basic index as fallback
+      try {
+        log("VECTOR DEBUG: Attempting to create basic vector index as fallback", "info");
+        const fallbackIndexSQL = `
+          CREATE INDEX IF NOT EXISTS idx_vectors_basic ON vectors(content_id, content_type) WHERE vector IS NOT NULL
+        `;
+        await db.prepare(fallbackIndexSQL).run();
+        log('VECTOR DEBUG: Created basic fallback index successfully', "info");
+      } catch (fallbackError) {
+        log(`VECTOR ERROR: Could not create fallback index: ${fallbackError.message}`, "error");
+      }
+    }
+    
+    // Check if vectors table has any rows
+    try {
+      const countResult = await db.prepare('SELECT COUNT(*) as count FROM vectors').get();
+      log(`VECTOR DEBUG: Current vector count in database: ${countResult?.count || 0}`, "info");
+    } catch (countError) {
+      log(`VECTOR ERROR: Could not count vectors: ${countError.message}`, "error");
     }
     
     return true;
   } catch (error) {
-    log(`Error creating vector indexes: ${error.message}`, "error");
+    log(`ERROR: Vector index creation failed: ${error.message}`, "error");
     return false;
   }
 }
@@ -1016,6 +1331,14 @@ const MEMORY_TOOLS = {
       },
       required: ["operation"]
     }
+  },
+  DIAGNOSE_VECTORS: {
+    name: "diagnoseVectors",
+    description: "Run diagnostics on the vector storage system to identify issues",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
   }
 };
 
@@ -1130,7 +1453,7 @@ async function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       content_id INTEGER NOT NULL,
       content_type TEXT NOT NULL,
-      vector BLOB NOT NULL,
+      vector F32_BLOB(128) NOT NULL,
       created_at INTEGER NOT NULL,
       metadata TEXT
     )
@@ -1164,6 +1487,12 @@ async function initializeDatabase() {
       try {
         await db.prepare(createStatement).run();
         log(`Table ${name} verified/created`);
+        
+        // For vectors table, do an additional check
+        if (name === 'vectors') {
+          const tableInfo = await db.prepare("PRAGMA table_info(vectors)").all();
+          log(`VECTOR DEBUG: Vector table schema: ${JSON.stringify(tableInfo)}`, "info");
+        }
       } catch (error) {
         log(`Failed to create table ${name}: ${error.message}`, "error");
         throw error;
@@ -1172,11 +1501,17 @@ async function initializeDatabase() {
     
     // Create vector indexes for efficient similarity search
     try {
-      await createVectorIndexes();
-      log('Vector indexes setup completed');
+      log("VECTOR DEBUG: Initializing vector indexes", "info");
+      const indexResult = await createVectorIndexes();
+      
+      if (indexResult) {
+        log('VECTOR SUCCESS: Vector indexes setup completed successfully', "info");
+      } else {
+        log('VECTOR WARNING: Vector indexes setup partially completed with issues', "error");
+      }
     } catch (indexError) {
-      // Non-fatal error - the system can still work without vector indexes
-      log(`Vector indexes creation failed: ${indexError.message}. Continuing with setup.`, "error");
+      log(`VECTOR ERROR: Vector indexes creation failed: ${indexError.message}`, "error");
+      log('VECTOR WARNING: Vector operations may be slower or unavailable', "error");
     }
     
     // Create a test_connection table to verify write access
@@ -1202,7 +1537,38 @@ async function initializeDatabase() {
       throw error;
     }
     
+    // Perform a quick test of the vector storage
+    try {
+      // Generate a simple test vector
+      log("VECTOR DEBUG: Testing vector storage during initialization", "info");
+      const testVector = new Float32Array(16).fill(0.1); // Simple test vector
+      
+      // Attempt to store it
+      const testResult = await storeEmbedding(
+        0, // Special ID 0 just for this test
+        'init_test', 
+        testVector, 
+        { test: true, timestamp: Date.now() }
+      );
+      
+      log(`VECTOR SUCCESS: Test vector storage succeeded: ${testResult ? 'Yes' : 'No'}`, "info");
+    } catch (testError) {
+      log(`VECTOR ERROR: Test vector storage failed: ${testError.message}`, "error");
+      log('VECTOR WARNING: Vector operations may not work properly', "error");
+    }
+    
     useInMemory = false;
+    
+    // After creating tables, check if vectors table needs migration
+    if (!useInMemory) {
+      try {
+        await migrateVectorsTable();
+      } catch (migrationError) {
+        log(`VECTOR ERROR: Error during vector table migration: ${migrationError.message}`, "error");
+        // Continue anyway - the system can still function with the old schema
+      }
+    }
+    
     return db;
   } catch (error) {
     log(`Database initialization failed: ${error.message}`, "error");
@@ -1937,25 +2303,26 @@ async function main() {
                 
                 messageId = result.lastInsertRowid;
                 
-                // Generate and store embedding in the background without blocking
-                setTimeout(async () => {
-                  try {
-                    // Generate vector embedding for the message
-                    const messageVector = await createEmbedding(content);
-                    
-                    // Store the embedding with link to the message
-                    await storeEmbedding(messageId, 'user_message', messageVector, {
-                      importance,
-                      timestamp: now,
-                      role: 'user'
-                    });
-                    
-                    logDebug(`Generated and stored embedding for user message ID ${messageId}`);
-                  } catch (vectorError) {
-                    log(`Error generating vector for user message: ${vectorError.message}`, "error");
-                    // Non-blocking - we continue even if vector generation fails
-                  }
-                }, 0);
+                // Generate and store embedding SYNCHRONOUSLY so we can catch errors
+                try {
+                  log(`VECTOR DEBUG: Starting vector generation for user message ID ${messageId}`, "info");
+                  
+                  // Generate vector embedding for the message
+                  const messageVector = await createEmbedding(content);
+                  log(`VECTOR DEBUG: Created embedding with ${messageVector.length} dimensions`, "info");
+                  
+                  // Store the embedding with link to the message
+                  await storeEmbedding(messageId, 'user_message', messageVector, {
+                    importance,
+                    timestamp: now,
+                    role: 'user'
+                  });
+                  
+                  log(`VECTOR SUCCESS: Generated and stored embedding for user message ID ${messageId}`, "info");
+                } catch (vectorError) {
+                  log(`VECTOR ERROR: Failed to generate/store vector for user message ID ${messageId}: ${vectorError.message}`, "error");
+                  // Still non-blocking, but we log more details
+                }
               }
             } catch (error) {
               log(`Error storing user message: ${error.message}`, "error");
@@ -2762,6 +3129,57 @@ async function main() {
                   };
                 }
                 
+                case "test": {
+                  // This is a new operation to test vector creation and storage
+                  log("VECTOR TEST: Running vector creation and storage test", "info");
+                  
+                  // Check database connection
+                  if (!db) {
+                    throw new Error("Database not initialized");
+                  }
+                  
+                  try {
+                    // Create a test vector
+                    const testContent = "This is a test vector for troubleshooting";
+                    const testVector = await createEmbedding(testContent);
+                    
+                    log(`VECTOR TEST: Created test vector with ${testVector.length} dimensions`, "info");
+                    
+                    // Generate a random test ID
+                    const testId = Date.now();
+                    
+                    // Store the test vector
+                    const result = await storeEmbedding(testId, 'test_vector', testVector, {
+                      test: true,
+                      timestamp: Date.now()
+                    });
+                    
+                    // Try to retrieve the vector to verify it was stored
+                    const verification = await db.prepare(`
+                      SELECT id FROM vectors 
+                      WHERE content_id = ? AND content_type = 'test_vector'
+                    `).get(testId);
+                    
+                    return {
+                      content: [{ type: "text", text: JSON.stringify({ 
+                        status: 'ok', 
+                        operation: 'test',
+                        result: {
+                          success: !!verification,
+                          vectorId: verification?.id,
+                          testId: testId,
+                          dimensions: testVector.length,
+                          timestamp: Date.now()
+                        }
+                      }) }],
+                      isError: false
+                    };
+                  } catch (testError) {
+                    log(`VECTOR TEST ERROR: ${testError.message}`, "error");
+                    throw testError;
+                  }
+                }
+                
                 default:
                   throw new Error(`Unknown operation: ${operation}. Supported operations are: store, search, update, delete`);
               }
@@ -2772,6 +3190,122 @@ async function main() {
                   status: 'error', 
                   error: error.message 
                 }) }],
+                isError: true
+              };
+            }
+          }
+          
+          case MEMORY_TOOLS.STORE_ASSISTANT_MESSAGE.name: {
+            // Store assistant message
+            const { content, importance = 'low', metadata = null } = args;
+            const now = Date.now();
+            let messageId;
+            
+            try {
+              if (useInMemory) {
+                inMemoryStore.messages.push({
+                  role: 'assistant',
+                  content,
+                  created_at: now,
+                  importance,
+                  metadata
+                });
+                messageId = inMemoryStore.messages.length;
+              } else {
+                // Insert message into database
+                const result = await db.prepare(`
+                  INSERT INTO messages (role, content, created_at, importance, metadata)
+                  VALUES ('assistant', ?, ?, ?, ?)
+                `).run(content, now, importance, metadata ? JSON.stringify(metadata) : null);
+                
+                messageId = result.lastInsertRowid;
+                
+                // Generate and store embedding SYNCHRONOUSLY to catch errors
+                try {
+                  log(`VECTOR DEBUG: Starting vector generation for assistant message ID ${messageId}`, "info");
+                  
+                  // Generate vector embedding for the message
+                  const messageVector = await createEmbedding(content);
+                  log(`VECTOR DEBUG: Created embedding with ${messageVector.length} dimensions`, "info");
+                  
+                  // Store the embedding with link to the message
+                  await storeEmbedding(messageId, 'assistant_message', messageVector, {
+                    importance,
+                    timestamp: now,
+                    role: 'assistant'
+                  });
+                  
+                  log(`VECTOR SUCCESS: Generated and stored embedding for assistant message ID ${messageId}`, "info");
+                  
+                  // Check if the message contains code and process it
+                  if (isCodeRelatedQuery(content)) {
+                    log(`VECTOR DEBUG: Detected code-related content in assistant message ID ${messageId}`, "info");
+                    
+                    // Extract code snippets if present using regex patterns
+                    const codeBlocks = extractCodeBlocks(content);
+                    if (codeBlocks.length > 0) {
+                      log(`VECTOR DEBUG: Extracted ${codeBlocks.length} code blocks from assistant message`, "info");
+                      
+                      // Store each code block with its own embedding
+                      for (let i = 0; i < codeBlocks.length; i++) {
+                        const block = codeBlocks[i];
+                        try {
+                          const snippetVector = await createEmbedding(block.content);
+                          
+                          // Store as a specialized code snippet type
+                          await storeEmbedding(messageId, 'assistant_code_snippet', snippetVector, {
+                            snippet_index: i,
+                            language: block.language || 'unknown',
+                            message_id: messageId
+                          });
+                          
+                          log(`VECTOR SUCCESS: Stored embedding for code block ${i} with language ${block.language || 'unknown'}`, "info");
+                        } catch (snippetError) {
+                          log(`VECTOR ERROR: Failed to process code block ${i}: ${snippetError.message}`, "error");
+                        }
+                      }
+                    }
+                  }
+                } catch (vectorError) {
+                  log(`VECTOR ERROR: Failed to generate/store vector for assistant message ID ${messageId}: ${vectorError.message}`, "error");
+                  // Still non-blocking - we log more details about the failure
+                }
+              }
+              
+              log(`Stored assistant message: "${content.substring(0, 30)}..." with importance: ${importance}`);
+              
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'ok', messageId, timestamp: now }) }],
+                isError: false
+              };
+            } catch (error) {
+              log(`Error storing assistant message: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
+                isError: true
+              };
+            }
+          }
+          
+          case MEMORY_TOOLS.DIAGNOSE_VECTORS.name: {
+            try {
+              log("Running vector storage diagnostics", "info");
+              const diagnosticResults = await diagnoseVectorStorage();
+              
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: JSON.stringify({ 
+                    status: 'ok', 
+                    diagnostics: diagnosticResults
+                  }) 
+                }],
+                isError: false
+              };
+            } catch (error) {
+              log(`Error in vector diagnostics: ${error.message}`, "error");
+              return {
+                content: [{ type: "text", text: JSON.stringify({ status: 'error', error: error.message }) }],
                 isError: true
               };
             }
@@ -3546,6 +4080,144 @@ async function performVectorMaintenance(options = {}) {
 }
 
 /**
+ * Optimizes the vector database for better performance
+ * This should be called periodically to ensure optimal ANN search performance
+ * 
+ * @returns {Promise<boolean>} Success status
+ */
+async function optimizeVectorIndexes() {
+  try {
+    log("VECTOR DEBUG: Starting vector index optimization", "info");
+    
+    if (!db) {
+      log("VECTOR ERROR: Database not initialized in optimizeVectorIndexes", "error");
+      return false;
+    }
+    
+    // 1. Get vector count
+    let vectorCount = 0;
+    try {
+      const countResult = await db.prepare('SELECT COUNT(*) as count FROM vectors').get();
+      vectorCount = countResult?.count || 0;
+      log(`VECTOR DEBUG: Current vector count: ${vectorCount}`, "info");
+      
+      if (vectorCount < 10) {
+        log("VECTOR DEBUG: Not enough vectors to warrant optimization", "info");
+        return true;
+      }
+    } catch (countError) {
+      log(`VECTOR ERROR: Failed to get vector count: ${countError.message}`, "error");
+      return false;
+    }
+    
+    // 2. Check if Turso vector features are available
+    let hasVectorFunctions = false;
+    try {
+      // Check for vector_top_k which indicates Turso vector support
+      await db.prepare("SELECT 1 FROM vector_top_k('idx_vectors_ann', vector32('[0.1, 0.2, 0.3]'), 1) LIMIT 0").all();
+      hasVectorFunctions = true;
+      log("VECTOR DEBUG: Turso vector functions are available", "info");
+    } catch (fnError) {
+      hasVectorFunctions = false;
+      log(`VECTOR DEBUG: Turso vector functions not available: ${fnError.message}`, "info");
+      log("VECTOR DEBUG: Skipping ANN-specific optimizations", "info");
+    }
+    
+    // 3. Execute optimizations
+    
+    // 3.1 Run ANALYZE on the vectors table
+    try {
+      log("VECTOR DEBUG: Running ANALYZE on vectors table", "info");
+      await db.prepare("ANALYZE vectors").run();
+      log("VECTOR DEBUG: ANALYZE completed successfully", "info");
+    } catch (analyzeError) {
+      log(`VECTOR WARNING: ANALYZE failed: ${analyzeError.message}`, "error");
+    }
+    
+    // 3.2 Update vector index statistics
+    try {
+      log("VECTOR DEBUG: Updating index statistics", "info");
+      await db.prepare("ANALYZE idx_vectors_content_type").run();
+      await db.prepare("ANALYZE idx_vectors_content_id").run();
+      
+      // Try to analyze the vector-specific indexes
+      try {
+        await db.prepare("ANALYZE idx_vectors_vector").run();
+      } catch (idxError) {
+        log(`VECTOR DEBUG: Could not analyze standard vector index: ${idxError.message}`, "info");
+      }
+      
+      try {
+        await db.prepare("ANALYZE idx_vectors_ann").run();
+      } catch (annError) {
+        log(`VECTOR DEBUG: Could not analyze ANN vector index: ${annError.message}`, "info");
+      }
+      
+      log("VECTOR DEBUG: Index statistics updated", "info");
+    } catch (statsError) {
+      log(`VECTOR WARNING: Index statistics update failed: ${statsError.message}`, "error");
+    }
+    
+    // 3.3 Turso-specific ANN optimizations
+    if (hasVectorFunctions) {
+      try {
+        // Set optimal ANN parameters based on data size
+        let neighborsValue = 10; // Default
+        
+        // Scale up neighbors with more data for better recall
+        if (vectorCount > 10000) {
+          neighborsValue = 40;
+        } else if (vectorCount > 1000) {
+          neighborsValue = 20;
+        }
+        
+        log(`VECTOR DEBUG: Setting ANN neighbors to ${neighborsValue} based on data size`, "info");
+        await db.prepare(`PRAGMA libsql_vector_neighbors = ${neighborsValue}`).run();
+        
+        // Rebuild ANN index if available
+        try {
+          log("VECTOR DEBUG: Rebuilding ANN index for optimal performance", "info");
+          
+          // Drop and recreate the index
+          await db.prepare("DROP INDEX IF EXISTS idx_vectors_ann").run();
+          
+          const vectorIndexSQL = `
+            CREATE INDEX idx_vectors_ann 
+            ON vectors(libsql_vector_idx(vector)) 
+            WHERE vector IS NOT NULL
+          `;
+          await db.prepare(vectorIndexSQL).run();
+          log("VECTOR SUCCESS: ANN index rebuilt successfully", "info");
+        } catch (rebuildError) {
+          log(`VECTOR WARNING: ANN index rebuild failed: ${rebuildError.message}`, "error");
+        }
+      } catch (annOptError) {
+        log(`VECTOR WARNING: ANN optimization failed: ${annOptError.message}`, "error");
+      }
+    }
+    
+    // 4. Optional: Run database VACUUM for overall optimization
+    // Be careful with this on large databases as it can be slow
+    const shouldVacuum = process.env.VECTOR_VACUUM === 'true' && vectorCount < 100000;
+    if (shouldVacuum) {
+      try {
+        log("VECTOR DEBUG: Running VACUUM on database", "info");
+        await db.prepare("VACUUM").run();
+        log("VECTOR DEBUG: VACUUM completed successfully", "info");
+      } catch (vacuumError) {
+        log(`VECTOR WARNING: VACUUM failed: ${vacuumError.message}`, "error");
+      }
+    }
+    
+    log("VECTOR SUCCESS: Vector optimization completed successfully", "info");
+    return true;
+  } catch (error) {
+    log(`VECTOR ERROR: Vector optimization failed: ${error.message}`, "error");
+    return false;
+  }
+}
+
+/**
  * Schedule periodic vector maintenance to run at regular intervals
  * @param {number} intervalMinutes - Interval in minutes between maintenance runs
  */
@@ -3556,31 +4228,551 @@ function scheduleVectorMaintenance(intervalMinutes = 60) {
     return;
   }
   
-  log(`Scheduling vector maintenance to run every ${intervalMinutes} minutes`);
+  log(`VECTOR DEBUG: Scheduling vector maintenance every ${intervalMinutes} minutes`, "info");
   
-  // Set up recurring maintenance
-  const interval = intervalMinutes * 60 * 1000; // Convert to milliseconds
-  
-  setInterval(async () => {
-    log('Running scheduled vector maintenance');
+  // Initial maintenance after a short delay
+  setTimeout(async () => {
     try {
-      // Add to background tasks queue to avoid blocking
-      backgroundTasks.addTask(async () => {
-        await performVectorMaintenance();
-      });
+      log("VECTOR DEBUG: Running initial vector maintenance", "info");
+      const maintenanceResult = await performVectorMaintenance();
+      log(`VECTOR DEBUG: Initial maintenance ${maintenanceResult ? 'succeeded' : 'failed'}`, "info");
+      
+      // Additional optimization step for vector indexes
+      try {
+        log("VECTOR DEBUG: Running initial vector index optimization", "info");
+        const optimizationResult = await optimizeVectorIndexes();
+        log(`VECTOR DEBUG: Initial optimization ${optimizationResult ? 'succeeded' : 'failed'}`, "info");
+      } catch (optimizationError) {
+        log(`VECTOR ERROR: Initial optimization error: ${optimizationError.message}`, "error");
+      }
     } catch (error) {
-      log(`Error scheduling vector maintenance: ${error.message}`, 'error');
+      log(`VECTOR ERROR: Initial maintenance error: ${error.message}`, "error");
     }
-  }, interval);
-  
-  // Also run once at startup after a delay to allow system to initialize
-  setTimeout(() => {
-    log('Running initial vector maintenance');
-    backgroundTasks.addTask(async () => {
-      await performVectorMaintenance();
-    });
   }, 30000); // 30 seconds after startup
+  
+  // Set up regular interval
+  setInterval(async () => {
+    try {
+      log("VECTOR DEBUG: Running scheduled vector maintenance", "info");
+      const maintenanceResult = await performVectorMaintenance();
+      log(`VECTOR DEBUG: Scheduled maintenance ${maintenanceResult ? 'succeeded' : 'failed'}`, "info");
+      
+      // Run optimization every 24 hours (or 24 intervals)
+      const hourlyIntervals = 60 / intervalMinutes;
+      const runOptimization = Math.random() < (1 / (24 * hourlyIntervals)); // Randomly once per ~24 hours
+      
+      if (runOptimization) {
+        try {
+          log("VECTOR DEBUG: Running scheduled vector index optimization", "info");
+          const optimizationResult = await optimizeVectorIndexes();
+          log(`VECTOR DEBUG: Scheduled optimization ${optimizationResult ? 'succeeded' : 'failed'}`, "info");
+        } catch (optimizationError) {
+          log(`VECTOR ERROR: Scheduled optimization error: ${optimizationError.message}`, "error");
+        }
+      }
+    } catch (error) {
+      log(`VECTOR ERROR: Scheduled maintenance error: ${error.message}`, "error");
+    }
+  }, intervalMinutes * 60 * 1000);
 }
 
 // Schedule vector maintenance when the system starts
 scheduleVectorMaintenance();
+
+// Add a migration function to update the vectors table schema if needed
+async function migrateVectorsTable() {
+  try {
+    log("VECTOR DEBUG: Checking if vectors table needs migration", "info");
+    
+    // Check the current schema
+    const tableInfo = await db.prepare("PRAGMA table_info(vectors)").all();
+    const vectorColumn = tableInfo.find(col => col.name === 'vector');
+    
+    if (!vectorColumn) {
+      log("VECTOR ERROR: Vector column not found in vectors table", "error");
+      return false;
+    }
+    
+    // Default to 128 dimensions for compatibility with existing code
+    const DEFAULT_VECTOR_DIMS = 128;
+    
+    // Get the max dimensions from environment variable
+    const configuredDims = process.env.VECTOR_DIMENSIONS ? 
+      parseInt(process.env.VECTOR_DIMENSIONS, 10) : DEFAULT_VECTOR_DIMS;
+    
+    // Validate dimensions (Turso supports up to 65536 dimensions)
+    const VECTOR_DIMENSIONS = Math.min(Math.max(configuredDims, 32), 65536);
+    
+    // Log configured dimensions
+    log(`VECTOR DEBUG: Configured vector dimensions: ${VECTOR_DIMENSIONS}`, "info");
+    
+    // Check if the column is already F32_BLOB type with the correct dimensions
+    const isF32Blob = vectorColumn.type.includes('F32_BLOB');
+    const currentDims = isF32Blob ? 
+      parseInt(vectorColumn.type.match(/F32_BLOB\((\d+)\)/)?.[1] || '0', 10) : 0;
+    
+    // No migration needed if already correct type and dimensions
+    if (isF32Blob && currentDims === VECTOR_DIMENSIONS) {
+      log(`VECTOR DEBUG: Vector column is already using F32_BLOB(${VECTOR_DIMENSIONS}), no migration needed`, "info");
+      return true;
+    }
+    
+    // Migration needed - create new table with correct schema
+    log(`VECTOR DEBUG: Migrating vectors table to use F32_BLOB(${VECTOR_DIMENSIONS})`, "info");
+    
+    // 1. Backup existing data
+    let existingData;
+    try {
+      existingData = await db.prepare("SELECT * FROM vectors").all();
+      log(`VECTOR DEBUG: Backing up ${existingData.length} vectors`, "info");
+    } catch (backupError) {
+      log(`VECTOR ERROR: Could not backup existing vectors: ${backupError.message}`, "error");
+      return false;
+    }
+    
+    // Start a transaction for the migration
+    try {
+      await db.prepare("BEGIN TRANSACTION").run();
+      
+      // 2. Rename existing table
+      await db.prepare("ALTER TABLE vectors RENAME TO vectors_old").run();
+      log("VECTOR DEBUG: Renamed existing table to vectors_old", "info");
+      
+      // 3. Create new table with correct schema
+      await db.prepare(`
+        CREATE TABLE vectors (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_id INTEGER NOT NULL,
+          content_type TEXT NOT NULL,
+          vector F32_BLOB(${VECTOR_DIMENSIONS}) NOT NULL,
+          created_at INTEGER NOT NULL,
+          metadata TEXT
+        )
+      `).run();
+      log(`VECTOR DEBUG: Created new vectors table with F32_BLOB(${VECTOR_DIMENSIONS})`, "info");
+      
+      // 4. Attempt to migrate data if we have any
+      if (existingData && existingData.length > 0) {
+        log(`VECTOR DEBUG: Migrating ${existingData.length} vectors to new table`, "info");
+        
+        // Process in batches to avoid overwhelming database
+        const BATCH_SIZE = 100;
+        let migratedCount = 0;
+        let errorCount = 0;
+        
+        // Prepare the insert statement
+        const insertStmt = db.prepare(`
+          INSERT INTO vectors (id, content_id, content_type, vector, created_at, metadata)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        
+        // Process in batches
+        for (let i = 0; i < existingData.length; i += BATCH_SIZE) {
+          const batch = existingData.slice(i, i + BATCH_SIZE);
+          log(`VECTOR DEBUG: Processing batch ${i/BATCH_SIZE + 1}/${Math.ceil(existingData.length/BATCH_SIZE)}`, "info");
+          
+          for (const row of batch) {
+            try {
+              // If the old format was not F32_BLOB, convert it using vector32
+              let vectorValue = row.vector;
+              
+              if (!isF32Blob && row.vector) {
+                // Convert to Float32Array first
+                const vector = bufferToVector(row.vector);
+                // Then back to buffer using vector32
+                const vectorString = '[' + Array.from(vector).join(', ') + ']';
+                try {
+                  const result = await db.prepare(`SELECT vector32(?) AS vec`).get(vectorString);
+                  if (result && result.vec) {
+                    vectorValue = result.vec;
+                  }
+                } catch (convError) {
+                  log(`VECTOR ERROR: Could not convert vector: ${convError.message}`, "error");
+                  errorCount++;
+                  continue;
+                }
+              }
+              
+              // Insert into new table
+              await insertStmt.run(
+                row.id,
+                row.content_id,
+                row.content_type,
+                vectorValue,
+                row.created_at,
+                row.metadata
+              );
+              
+              migratedCount++;
+            } catch (rowError) {
+              log(`VECTOR ERROR: Failed to migrate vector ${row.id}: ${rowError.message}`, "error");
+              errorCount++;
+            }
+          }
+        }
+        
+        log(`VECTOR DEBUG: Migration complete. ${migratedCount} vectors migrated, ${errorCount} errors`, "info");
+      }
+      
+      // 5. Create indexes on the new table
+      await createVectorIndexes();
+      
+      // 6. Drop the old table if everything went well
+      if (errorCount === 0) {
+        await db.prepare("DROP TABLE vectors_old").run();
+        log("VECTOR DEBUG: Old vectors table dropped", "info");
+      } else {
+        log(`VECTOR WARNING: Keeping vectors_old table due to ${errorCount} migration errors`, "error");
+      }
+      
+      // Commit the transaction
+      await db.prepare("COMMIT").run();
+      log("VECTOR SUCCESS: Vector table migration committed successfully", "info");
+      
+      return true;
+    } catch (error) {
+      // Rollback on any error
+      try {
+        await db.prepare("ROLLBACK").run();
+        log("VECTOR DEBUG: Migration transaction rolled back due to error", "error");
+      } catch (rollbackError) {
+        log(`VECTOR ERROR: Rollback failed: ${rollbackError.message}`, "error");
+      }
+      
+      log(`VECTOR ERROR: Failed to migrate vectors table: ${error.message}`, "error");
+      return false;
+    }
+  } catch (error) {
+    log(`VECTOR ERROR: Failed to migrate vectors table: ${error.message}`, "error");
+    return false;
+  }
+}
+
+// Add this function near other database utility functions
+async function diagnoseVectorStorage() {
+  log("VECTOR DIAGNOSTIC: Starting vector storage diagnostic", "info");
+  const results = {
+    databaseConnection: false,
+    tablesExist: false,
+    vectorsTableStructure: null,
+    indexesExist: false,
+    tursoVectorSupport: false,
+    tursoANNSupport: false,
+    vectorTopKSupport: false,
+    testVectorCreation: false,
+    testVectorStorage: false,
+    testVectorRetrieval: false,
+    testANNSearch: false,
+    existingVectorCount: 0,
+    errors: []
+  };
+  
+  try {
+    // 1. Check database connection
+    if (!db) {
+      results.errors.push("Database not initialized");
+      return results;
+    }
+    
+    try {
+      const connectionTest = await db.prepare('SELECT 1 as test').get();
+      results.databaseConnection = !!connectionTest;
+      log(`VECTOR DIAGNOSTIC: Database connection: ${results.databaseConnection ? 'OK' : 'FAILED'}`, "info");
+    } catch (connError) {
+      results.errors.push(`Database connection error: ${connError.message}`);
+      return results;
+    }
+    
+    // 2. Check SQLite version
+    try {
+      const versionResult = await db.prepare('SELECT sqlite_version() as version').get();
+      log(`VECTOR DIAGNOSTIC: SQLite version: ${versionResult?.version || 'unknown'}`, "info");
+    } catch (versionError) {
+      log(`VECTOR DIAGNOSTIC: Could not get SQLite version: ${versionError.message}`, "info");
+      results.errors.push(`Could not get SQLite version: ${versionError.message}`);
+    }
+    
+    // 3. Check if vectors table exists
+    try {
+      const tablesResult = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vectors'").get();
+      results.tablesExist = !!tablesResult;
+      log(`VECTOR DIAGNOSTIC: Vectors table exists: ${results.tablesExist ? 'YES' : 'NO'}`, "info");
+      
+      if (!results.tablesExist) {
+        results.errors.push("Vectors table does not exist");
+        return results;
+      }
+    } catch (tableError) {
+      results.errors.push(`Error checking tables: ${tableError.message}`);
+      return results;
+    }
+    
+    // 4. Check vectors table structure
+    try {
+      const tableInfo = await db.prepare("PRAGMA table_info(vectors)").all();
+      results.vectorsTableStructure = tableInfo;
+      
+      // Check if all required columns exist
+      const requiredColumns = ['id', 'content_id', 'content_type', 'vector', 'created_at'];
+      const missingColumns = requiredColumns.filter(col => 
+        !tableInfo.some(info => info.name.toLowerCase() === col.toLowerCase())
+      );
+      
+      if (missingColumns.length > 0) {
+        results.errors.push(`Missing required columns: ${missingColumns.join(', ')}`);
+      }
+      
+      // Check if vector column is F32_BLOB type
+      const vectorColumn = tableInfo.find(col => col.name === 'vector');
+      const isF32Blob = vectorColumn && vectorColumn.type.includes('F32_BLOB');
+      results.tursoVectorSupport = isF32Blob;
+      
+      // Get current vector dimensions if available
+      const dimensionsMatch = vectorColumn?.type.match(/F32_BLOB\((\d+)\)/);
+      const currentDimensions = dimensionsMatch ? dimensionsMatch[1] : 'unknown';
+      
+      // Check configured dimensions
+      const DEFAULT_VECTOR_DIMS = 128;
+      const configuredDims = process.env.VECTOR_DIMENSIONS ? 
+        parseInt(process.env.VECTOR_DIMENSIONS, 10) : DEFAULT_VECTOR_DIMS;
+      
+      log(`VECTOR DIAGNOSTIC: Table structure: ${missingColumns.length === 0 ? 'OK' : 'MISSING COLUMNS'}`, "info");
+      log(`VECTOR DIAGNOSTIC: Vector column type: ${vectorColumn ? vectorColumn.type : 'UNKNOWN'}`, "info");
+      log(`VECTOR DIAGNOSTIC: Vector dimensions: ${currentDimensions}`, "info");
+      log(`VECTOR DIAGNOSTIC: Configured dimensions: ${configuredDims}`, "info");
+      log(`VECTOR DIAGNOSTIC: Turso F32_BLOB support: ${isF32Blob ? 'YES' : 'NO'}`, "info");
+      
+      if (!isF32Blob) {
+        results.errors.push(`Vector column is not F32_BLOB type. Current type: ${vectorColumn ? vectorColumn.type : 'UNKNOWN'}`);
+      } else if (currentDimensions !== 'unknown' && parseInt(currentDimensions, 10) !== configuredDims) {
+        results.errors.push(`Vector dimensions mismatch: Table has ${currentDimensions}, configured for ${configuredDims}`);
+      }
+    } catch (structureError) {
+      results.errors.push(`Error checking table structure: ${structureError.message}`);
+    }
+    
+    // 5. Check Turso vector functions support
+    try {
+      log(`VECTOR DIAGNOSTIC: Testing Turso vector functions`, "info");
+      
+      // Test vector32 function
+      try {
+        const vector32Test = await db.prepare("SELECT vector32('[0.1, 0.2, 0.3]') AS vec").get();
+        const hasVector32 = vector32Test && vector32Test.vec;
+        log(`VECTOR DIAGNOSTIC: vector32 function: ${hasVector32 ? 'SUPPORTED' : 'NOT SUPPORTED'}`, "info");
+        
+        if (!hasVector32) {
+          results.errors.push("vector32 function not supported");
+        }
+      } catch (fnError) {
+        log(`VECTOR DIAGNOSTIC: vector32 function error: ${fnError.message}`, "info");
+        results.errors.push(`vector32 function error: ${fnError.message}`);
+      }
+      
+      // Test vector_distance_cos function
+      try {
+        const distanceTest = await db.prepare("SELECT vector_distance_cos(vector32('[0.1, 0.2, 0.3]'), vector32('[0.4, 0.5, 0.6]')) AS dist").get();
+        const hasDistanceFn = distanceTest && typeof distanceTest.dist === 'number';
+        log(`VECTOR DIAGNOSTIC: vector_distance_cos function: ${hasDistanceFn ? 'SUPPORTED' : 'NOT SUPPORTED'}`, "info");
+        
+        if (!hasDistanceFn) {
+          results.errors.push("vector_distance_cos function not supported");
+        } else {
+          results.tursoVectorSupport = true;
+        }
+      } catch (fnError) {
+        log(`VECTOR DIAGNOSTIC: vector_distance_cos function error: ${fnError.message}`, "info");
+        results.errors.push(`vector_distance_cos function error: ${fnError.message}`);
+      }
+      
+      // Test libsql_vector_idx function (for ANN indexing)
+      try {
+        await db.prepare("SELECT typeof(libsql_vector_idx('dummy')) as type").get();
+        results.tursoANNSupport = true;
+        log(`VECTOR DIAGNOSTIC: libsql_vector_idx function: SUPPORTED`, "info");
+      } catch (annError) {
+        results.tursoANNSupport = false;
+        log(`VECTOR DIAGNOSTIC: libsql_vector_idx function: NOT SUPPORTED - ${annError.message}`, "info");
+        results.errors.push(`libsql_vector_idx function error: ${annError.message}`);
+      }
+      
+      // Test vector_top_k function (for ANN searches)
+      try {
+        await db.prepare("SELECT 1 FROM vector_top_k('idx_vectors_ann', vector32('[0.1, 0.2, 0.3]'), 1) LIMIT 0").all();
+        results.vectorTopKSupport = true;
+        log(`VECTOR DIAGNOSTIC: vector_top_k function: SUPPORTED`, "info");
+      } catch (topkError) {
+        results.vectorTopKSupport = false;
+        log(`VECTOR DIAGNOSTIC: vector_top_k function: NOT SUPPORTED - ${topkError.message}`, "info");
+        results.errors.push(`vector_top_k function error: ${topkError.message}`);
+      }
+      
+      // Test vector_to_json function
+      try {
+        const testVector = await createEmbedding("test vector", 3);
+        const vectorBuffer = vectorToBuffer(testVector);
+        
+        const jsonTest = await db.prepare("SELECT vector_to_json(?) AS json").get(vectorBuffer);
+        const hasVectorToJson = jsonTest && jsonTest.json;
+        log(`VECTOR DIAGNOSTIC: vector_to_json function: ${hasVectorToJson ? 'SUPPORTED' : 'NOT SUPPORTED'}`, "info");
+        
+        if (hasVectorToJson) {
+          log(`VECTOR DIAGNOSTIC: vector_to_json output: ${jsonTest.json}`, "info");
+        }
+      } catch (jsonError) {
+        log(`VECTOR DIAGNOSTIC: vector_to_json function error: ${jsonError.message}`, "info");
+        results.errors.push(`vector_to_json function error: ${jsonError.message}`);
+      }
+    } catch (fnTestError) {
+      results.errors.push(`Vector functions test error: ${fnTestError.message}`);
+    }
+    
+    // 6. Check indexes
+    try {
+      const indexesResult = await db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='vectors'").all();
+      results.indexesExist = indexesResult.length > 0;
+      log(`VECTOR DIAGNOSTIC: Vector indexes found: ${indexesResult.length}`, "info");
+      
+      // List the indexes
+      indexesResult.forEach(idx => {
+        log(`VECTOR DIAGNOSTIC: Found index: ${idx.name}`, "info");
+      });
+      
+      // Check for ANN index specifically
+      const hasAnnIndex = indexesResult.some(idx => idx.name === 'idx_vectors_ann');
+      log(`VECTOR DIAGNOSTIC: ANN index exists: ${hasAnnIndex ? 'YES' : 'NO'}`, "info");
+      
+      if (!hasAnnIndex && results.tursoANNSupport) {
+        results.errors.push("ANN index (idx_vectors_ann) missing but libsql_vector_idx is supported");
+      }
+    } catch (indexError) {
+      results.errors.push(`Error checking indexes: ${indexError.message}`);
+    }
+    
+    // 7. Test vector creation
+    try {
+      const testText = "Vector diagnostic test text";
+      const testVector = await createEmbedding(testText);
+      results.testVectorCreation = testVector.length > 0;
+      log(`VECTOR DIAGNOSTIC: Vector creation: ${results.testVectorCreation ? 'OK' : 'FAILED'}`, "info");
+      
+      // 8. Test vector storage
+      if (results.testVectorCreation) {
+        const testId = Date.now();
+        try {
+          const storageResult = await storeEmbedding(testId, 'diagnostic_test', testVector, {
+            diagnostic: true,
+            timestamp: Date.now()
+          });
+          
+          results.testVectorStorage = !!storageResult;
+          log(`VECTOR DIAGNOSTIC: Vector storage: ${results.testVectorStorage ? 'OK' : 'FAILED'}`, "info");
+          
+          // 9. Test vector retrieval
+          try {
+            const retrievalResult = await db.prepare(`
+              SELECT id FROM vectors 
+              WHERE content_id = ? AND content_type = 'diagnostic_test'
+            `).get(testId);
+            
+            results.testVectorRetrieval = !!retrievalResult;
+            log(`VECTOR DIAGNOSTIC: Vector retrieval: ${results.testVectorRetrieval ? 'OK' : 'FAILED'}`, "info");
+            
+            // 10. Test vector similarity search using vector_distance_cos
+            if (results.testVectorRetrieval && results.tursoVectorSupport) {
+              try {
+                const vectorString = '[' + Array.from(testVector).join(', ') + ']';
+                const similarityQuery = `
+                  SELECT 
+                    id, 
+                    content_id, 
+                    (1 - vector_distance_cos(vector, vector32(?))) AS similarity
+                  FROM vectors
+                  WHERE content_type = 'diagnostic_test'
+                  ORDER BY similarity DESC
+                  LIMIT 1
+                `;
+                
+                const similarityResult = await db.prepare(similarityQuery).get(vectorString);
+                log(`VECTOR DIAGNOSTIC: Vector similarity search: ${similarityResult ? 'OK' : 'FAILED'}`, "info");
+                
+                if (similarityResult) {
+                  log(`VECTOR DIAGNOSTIC: Similarity value: ${similarityResult.similarity}`, "info");
+                }
+              } catch (similarityError) {
+                log(`VECTOR DIAGNOSTIC: Vector similarity error: ${similarityError.message}`, "info");
+                results.errors.push(`Vector similarity search error: ${similarityError.message}`);
+              }
+              
+              // 11. Test ANN search using vector_top_k if available
+              if (results.vectorTopKSupport) {
+                try {
+                  const vectorString = '[' + Array.from(testVector).join(', ') + ']';
+                  const annQuery = `
+                    SELECT 
+                      v.id, 
+                      v.content_id, 
+                      t.score AS similarity
+                    FROM vector_top_k('idx_vectors_ann', vector32(?), 1) t
+                    JOIN vectors v ON v.rowid = t.rowid
+                    WHERE v.content_type = 'diagnostic_test'
+                    LIMIT 1
+                  `;
+                  
+                  const annResult = await db.prepare(annQuery).get(vectorString);
+                  results.testANNSearch = !!annResult;
+                  log(`VECTOR DIAGNOSTIC: ANN search: ${results.testANNSearch ? 'OK' : 'FAILED'}`, "info");
+                  
+                  if (annResult) {
+                    log(`VECTOR DIAGNOSTIC: ANN similarity score: ${annResult.similarity}`, "info");
+                  }
+                } catch (annError) {
+                  log(`VECTOR DIAGNOSTIC: ANN search error: ${annError.message}`, "info");
+                  results.errors.push(`ANN search error: ${annError.message}`);
+                }
+              }
+            }
+          } catch (retrievalError) {
+            results.errors.push(`Vector retrieval error: ${retrievalError.message}`);
+          }
+        } catch (storageError) {
+          results.errors.push(`Vector storage error: ${storageError.message}`);
+        }
+      }
+    } catch (creationError) {
+      results.errors.push(`Vector creation error: ${creationError.message}`);
+    }
+    
+    // 12. Count existing vectors
+    try {
+      const countResult = await db.prepare('SELECT COUNT(*) as count FROM vectors').get();
+      results.existingVectorCount = countResult?.count || 0;
+      log(`VECTOR DIAGNOSTIC: Existing vector count: ${results.existingVectorCount}`, "info");
+    } catch (countError) {
+      results.errors.push(`Vector count error: ${countError.message}`);
+    }
+    
+    // 13. Summarize the results
+    const supportedFeatures = [];
+    const missingFeatures = [];
+    
+    if (results.tursoVectorSupport) supportedFeatures.push("Basic vector operations");
+    else missingFeatures.push("Basic vector operations");
+    
+    if (results.tursoANNSupport) supportedFeatures.push("ANN indexing");
+    else missingFeatures.push("ANN indexing");
+    
+    if (results.vectorTopKSupport) supportedFeatures.push("Top-K vector search");
+    else missingFeatures.push("Top-K vector search");
+    
+    log("VECTOR DIAGNOSTIC: === Summary ===", "info");
+    log(`VECTOR DIAGNOSTIC: Supported features: ${supportedFeatures.join(", ") || "None"}`, "info");
+    log(`VECTOR DIAGNOSTIC: Missing features: ${missingFeatures.join(", ") || "None"}`, "info");
+    log(`VECTOR DIAGNOSTIC: Error count: ${results.errors.length}`, "info");
+    
+    return results;
+  } catch (error) {
+    results.errors.push(`Overall diagnostic error: ${error.message}`);
+    return results;
+  }
+}

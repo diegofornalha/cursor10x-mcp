@@ -8,6 +8,7 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "echo \"No tests configured yet\" && exit 0",
+    "test-vectors": "node test-vectors.js",
     "build": "chmod +x index.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm test"
