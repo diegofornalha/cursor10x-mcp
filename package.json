@@ -1,6 +1,6 @@
 {
   "name": "cursor10x-mcp",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Memory System for Cursor using MCP - Provides persistent context awareness for Claude",
   "main": "index.js",
   "type": "module",

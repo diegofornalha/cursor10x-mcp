@@ -10,7 +10,7 @@ A comprehensive memory system for Cursor using the Model Context Protocol (MCP).
 
 <p align="center">
   <img src="https://img.shields.io/badge/Status-Active-brightgreen" alt="Active">
-  <img src="https://img.shields.io/badge/Version-1.4.0-blue" alt="Version 1.4.0">
+  <img src="https://img.shields.io/badge/Version-1.4.1-blue" alt="Version 1.4.1">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License">
 </p>
 

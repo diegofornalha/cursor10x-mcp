@@ -2240,8 +2240,37 @@ async function main() {
                 last_accessed: lastAccessed
               };
               
-              // Retrieve context with semantic search based on user message
-              const contextResult = await getComprehensiveContext(content);
+              // Generate and store vector for future semantic search
+              try {
+                // Only in background after the main response
+                setTimeout(async () => {
+                  try {
+                    const messageId = await db.prepare('SELECT last_insert_rowid() as id').get().then(row => row.id);
+                    log(`Generated ID for user message: ${messageId}`);
+                    
+                    // Generate vector embedding for the message
+                    const messageVector = await createEmbedding(content);
+                    log(`Created embedding with ${messageVector.length} dimensions`);
+                    
+                    // Store the embedding with link to the message
+                    await storeEmbedding(messageId, 'user_message', messageVector, {
+                      importance,
+                      timestamp: now,
+                      role: 'user'
+                    });
+                    
+                    log(`Generated and stored embedding for user message ID ${messageId}`);
+                  } catch (vectorError) {
+                    log(`Failed to generate/store vector for user message: ${vectorError.message}`, "error");
+                  }
+                }, 0);
+              } catch (error) {
+                // Non-blocking
+                log(`Error in background vector processing: ${error.message}`, "error");
+              }
+              
+              // Retrieve FULL context instead of semantic-filtered context
+              const contextResult = await getFullContext();
               
               // Format the response with clear separation between banner and context
               return {
@@ -4775,4 +4804,325 @@ async function diagnoseVectorStorage() {
     results.errors.push(`Overall diagnostic error: ${error.message}`);
     return results;
   }
+}
+
+// Helper function to retrieve comprehensive context
+async function getComprehensiveContext(userMessage = null) {
+  const context = {
+    shortTerm: {},
+    longTerm: {},
+    episodic: {},
+    semantic: {}, // Section for semantically similar content
+    system: { healthy: true, timestamp: new Date().toISOString() }
+  };
+  
+  try {
+    let queryVector = null;
+    // Generate embedding for the user message if provided
+    if (userMessage) {
+      queryVector = await createEmbedding(userMessage);
+      log(`Generated query vector for context relevance scoring`);
+    }
+    
+    // --- SHORT-TERM CONTEXT ---
+    // Fetch more messages than we'll ultimately use, so we can filter by relevance
+    const messages = await db.prepare(`
+      SELECT id, role, content, created_at, importance
+      FROM messages
+      ORDER BY created_at DESC
+      LIMIT 15
+    `).all();
+    
+    // Score messages by relevance if we have a query vector
+    let scoredMessages = messages;
+    if (queryVector) {
+      scoredMessages = await scoreItemsByRelevance(messages, queryVector, 'user_message', 'assistant_message');
+      // Take top 5 most relevant messages
+      scoredMessages = scoredMessages.slice(0, 5);
+    } else {
+      // Without a query, just take the 5 most recent
+      scoredMessages = messages.slice(0, 5);
+    }
+    
+    // Get active files (similar approach)
+    const files = await db.prepare(`
+      SELECT id, filename, last_accessed
+      FROM active_files
+      ORDER BY last_accessed DESC
+      LIMIT 10
+    `).all();
+    
+    // Score files by relevance if we have a query vector
+    let scoredFiles = files;
+    if (queryVector) {
+      scoredFiles = await scoreItemsByRelevance(files, queryVector, 'code_file');
+      // Take top 5 most relevant files
+      scoredFiles = scoredFiles.slice(0, 5);
+    } else {
+      // Without a query, just take the 5 most recent
+      scoredFiles = files.slice(0, 5);
+    }
+    
+    context.shortTerm = {
+      recentMessages: scoredMessages.map(msg => ({
+        ...msg,
+        created_at: new Date(msg.created_at).toISOString(),
+        relevance: msg.relevance || null
+      })),
+      activeFiles: scoredFiles.map(file => ({
+        ...file,
+        last_accessed: new Date(file.last_accessed).toISOString(),
+        relevance: file.relevance || null
+      }))
+    };
+    
+    // --- LONG-TERM CONTEXT ---
+    // Fetch more items than we'll need so we can filter by relevance
+    const milestones = await db.prepare(`
+      SELECT id, title, description, importance, created_at
+      FROM milestones
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+    
+    const decisions = await db.prepare(`
+      SELECT id, title, content, reasoning, importance, created_at
+      FROM decisions
+      WHERE importance IN ('high', 'medium', 'critical')
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+    
+    const requirements = await db.prepare(`
+      SELECT id, title, content, importance, created_at
+      FROM requirements
+      WHERE importance IN ('high', 'medium', 'critical')
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+    
+    // Score long-term items by relevance if we have a query vector
+    let scoredMilestones = milestones;
+    let scoredDecisions = decisions;
+    let scoredRequirements = requirements;
+    
+    if (queryVector) {
+      // Score each type of item
+      scoredMilestones = await scoreItemsByRelevance(milestones, queryVector, 'milestone');
+      scoredDecisions = await scoreItemsByRelevance(decisions, queryVector, 'decision');
+      scoredRequirements = await scoreItemsByRelevance(requirements, queryVector, 'requirement');
+      
+      // Take top most relevant items
+      scoredMilestones = scoredMilestones.slice(0, 3);
+      scoredDecisions = scoredDecisions.slice(0, 3);
+      scoredRequirements = scoredRequirements.slice(0, 3);
+    } else {
+      // Without a query, just take the most recent
+      scoredMilestones = milestones.slice(0, 3);
+      scoredDecisions = decisions.slice(0, 3);
+      scoredRequirements = requirements.slice(0, 3);
+    }
+    
+    context.longTerm = {
+      milestones: scoredMilestones.map(m => ({
+        ...m,
+        created_at: new Date(m.created_at).toISOString(),
+        relevance: m.relevance || null
+      })),
+      decisions: scoredDecisions.map(d => ({
+        ...d,
+        created_at: new Date(d.created_at).toISOString(),
+        relevance: d.relevance || null
+      })),
+      requirements: scoredRequirements.map(r => ({
+        ...r,
+        created_at: new Date(r.created_at).toISOString(),
+        relevance: r.relevance || null
+      }))
+    };
+    
+    // --- EPISODIC CONTEXT ---
+    // Fetch episodes
+    const episodes = await db.prepare(`
+      SELECT id, actor, action, content, timestamp, importance, context
+      FROM episodes
+      ORDER BY timestamp DESC
+      LIMIT 15
+    `).all();
+    
+    // Score episodes by relevance if we have a query vector
+    let scoredEpisodes = episodes;
+    if (queryVector) {
+      scoredEpisodes = await scoreItemsByRelevance(episodes, queryVector, 'episode');
+      // Take top 5 most relevant episodes
+      scoredEpisodes = scoredEpisodes.slice(0, 5);
+    } else {
+      // Without a query, just take the 5 most recent
+      scoredEpisodes = episodes.slice(0, 5);
+    }
+    
+    context.episodic = {
+      recentEpisodes: scoredEpisodes.map(ep => ({
+        ...ep,
+        timestamp: new Date(ep.timestamp).toISOString(),
+        relevance: ep.relevance || null
+      }))
+    };
+    
+    // Add semantically similar content if userMessage is provided
+    if (userMessage && queryVector) {
+      try {
+        // Find similar messages with higher threshold for better quality matches
+        const similarMessages = await findSimilarItems(queryVector, 'user_message', 'assistant_message', 3, 0.6);
+        
+        // Find similar code files
+        const similarFiles = await findSimilarItems(queryVector, 'code_file', null, 2, 0.6);
+        
+        // Find similar code snippets
+        const similarSnippets = await findSimilarItems(queryVector, 'code_snippet', null, 3, 0.6);
+        
+        // Group similar code snippets by file to reduce redundancy
+        const groupedSnippets = groupSimilarSnippetsByFile(similarSnippets);
+        
+        // Add to context
+        context.semantic = {
+          similarMessages,
+          similarFiles,
+          similarSnippets: groupedSnippets
+        };
+        
+        log(`Added semantic context with ${similarMessages.length} messages, ${similarFiles.length} files, and ${groupedSnippets.length} snippet groups`);
+      } catch (error) {
+        log(`Error adding semantic context: ${error.message}`, "error");
+        // Non-blocking error - we still return the basic context
+        context.semantic = { error: error.message };
+      }
+    }
+  } catch (error) {
+    log(`Error building comprehensive context: ${error.message}`, "error");
+    // Return minimal context in case of error
+    context.error = error.message;
+  }
+  
+  return context;
+}
+
+// Helper function to retrieve full context without relevance filtering
+async function getFullContext() {
+  const context = {
+    shortTerm: {},
+    longTerm: {},
+    episodic: {},
+    semantic: {}, 
+    system: { healthy: true, timestamp: new Date().toISOString() }
+  };
+  
+  try {
+    // --- SHORT-TERM CONTEXT ---
+    // Get recent messages
+    const messages = await db.prepare(`
+      SELECT id, role, content, created_at, importance
+      FROM messages
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).all();
+    
+    // Get active files
+    const files = await db.prepare(`
+      SELECT id, filename, last_accessed
+      FROM active_files
+      ORDER BY last_accessed DESC
+      LIMIT 10
+    `).all();
+    
+    context.shortTerm = {
+      recentMessages: messages.map(msg => ({
+        ...msg,
+        created_at: new Date(msg.created_at).toISOString()
+      })),
+      activeFiles: files.map(file => ({
+        ...file,
+        last_accessed: new Date(file.last_accessed).toISOString()
+      }))
+    };
+    
+    // --- LONG-TERM CONTEXT ---
+    const milestones = await db.prepare(`
+      SELECT id, title, description, importance, created_at
+      FROM milestones
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+    
+    const decisions = await db.prepare(`
+      SELECT id, title, content, reasoning, importance, created_at
+      FROM decisions
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+    
+    const requirements = await db.prepare(`
+      SELECT id, title, content, importance, created_at
+      FROM requirements
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+    
+    context.longTerm = {
+      milestones: milestones.map(m => ({
+        ...m,
+        created_at: new Date(m.created_at).toISOString()
+      })),
+      decisions: decisions.map(d => ({
+        ...d,
+        created_at: new Date(d.created_at).toISOString()
+      })),
+      requirements: requirements.map(r => ({
+        ...r,
+        created_at: new Date(r.created_at).toISOString()
+      }))
+    };
+    
+    // --- EPISODIC CONTEXT ---
+    const episodes = await db.prepare(`
+      SELECT id, actor, action, content, timestamp, importance, context
+      FROM episodes
+      ORDER BY timestamp DESC
+      LIMIT 20
+    `).all();
+    
+    context.episodic = {
+      recentEpisodes: episodes.map(ep => ({
+        ...ep,
+        timestamp: new Date(ep.timestamp).toISOString()
+      }))
+    };
+    
+    // --- SEMANTIC CONTEXT ---
+    // Get most recent vector embeddings for browsing
+    try {
+      const recentVectors = await db.prepare(`
+        SELECT v.id, v.content_id, v.content_type, v.created_at, m.content
+        FROM vectors v
+        LEFT JOIN messages m ON v.content_id = m.id AND v.content_type IN ('user_message', 'assistant_message')
+        ORDER BY v.created_at DESC
+        LIMIT 10
+      `).all();
+      
+      context.semantic = {
+        recentVectors: recentVectors.map(v => ({
+          ...v,
+          created_at: new Date(v.created_at).toISOString()
+        }))
+      };
+    } catch (error) {
+      log(`Error retrieving recent vectors: ${error.message}`, "error");
+      context.semantic = {};
+    }
+  } catch (error) {
+    log(`Error building full context: ${error.message}`, "error");
+    context.error = error.message;
+  }
+  
+  return context;
 }
