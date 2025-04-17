@@ -13,6 +13,9 @@ node_modules/
 test/
 __tests__/
 coverage/
+test-vectors.js
+test-vectors.db
+*.db
 
 # Build artifacts
 .github/

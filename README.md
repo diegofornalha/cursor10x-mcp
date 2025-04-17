@@ -10,7 +10,7 @@ A comprehensive memory system for Cursor using the Model Context Protocol (MCP).
 
 <p align="center">
   <img src="https://img.shields.io/badge/Status-Active-brightgreen" alt="Active">
-  <img src="https://img.shields.io/badge/Version-1.3.0-blue" alt="Version 1.3.0">
+  <img src="https://img.shields.io/badge/Version-1.4.0-blue" alt="Version 1.4.0">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License">
 </p>
 
@@ -113,6 +113,8 @@ The system implements four complementary memory types:
 - **Banner Generation**: Creates informative context banners for conversation starts
 - **Database Persistence**: Stores all memory data in Turso database with automatic schema creation
 - **Vector Embeddings**: Creates numerical representations of text and code for similarity search
+- **Advanced Vector Storage**: Utilizes Turso's F32_BLOB and vector functions for efficient embedding storage
+- **ANN Search**: Supports Approximate Nearest Neighbor search for fast similarity matching
 - **Code Indexing**: Automatically detects and indexes code structures (functions, classes, variables)
 - **Semantic Search**: Finds related content based on meaning rather than exact text matches
 - **Relevance Scoring**: Ranks context items by relevance to the current query
