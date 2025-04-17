@@ -120,33 +120,58 @@ The system implements four complementary memory types:
 - **Auto-Embedding Generation**: Automatically creates vector embeddings for indexed content
 - **Cross-Reference Retrieval**: Finds related code across different files and components
 
+## Installation
+
+### Prerequisites
+
+- Node.js 18 or higher
+- npm or yarn package manager
+- Turso database account
+
+### Setup Steps
+
+1. **Configure Turso Database:**
+
+```bash
+# Install Turso CLI
+curl -sSfL https://get.turso.tech/install.sh | bash
+
+# Login to Turso
+turso auth login
+
+# Create a database
+turso db create cursor10x-mcp
+
+# Get database URL and token
+turso db show cursor10x-mcp --url
+turso db tokens create cursor10x-mcp
+```
+
+Or you can visit [Turso](https://turso.tech/) and sign up and proceed to create the database and get proper credentials. The free plan will more than cover your project memory.
+
+2. **Configure Cursor MCP:**
+
+Update `.cursor/mcp.json` in your project directory with the database url and turso auth token:
+
+```json
+{
+  "mcpServers": {
+    "cursor10x-mcp": {
+      "command": "npx",
+      "args": ["cursor10x-mcp"],
+      "enabled": true,
+      "env": {
+        "TURSO_DATABASE_URL": "your-turso-database-url",
+        "TURSO_AUTH_TOKEN": "your-turso-auth-token"
+      }
+    }
+  }
+}
+```
+
 ## Tool Documentation
 
 ### System Tools
-
-#### `mcp_cursor10x_generateBanner`
-
-Generates a banner with memory system statistics and status information.
-
-**Parameters:**
-- None required
-
-**Returns:**
-- Object with memory system status and statistics
-
-**Example:**
-```javascript
-// Generate a memory system banner
-const banner = await mcp_cursor10x_generateBanner({});
-// Result: {
-//   "status": "ok",
-//   "memory_system": "active",
-//   "mode": "turso",
-//   "message_count": 42,
-//   "active_files_count": 3,
-//   "last_accessed": "4/15/2023, 2:30:45 PM"
-// }
-```
 
 #### `mcp_cursor10x_initConversation`
 
