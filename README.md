@@ -1,52 +1,42 @@
-# Cursor10x Memory System
-
-A comprehensive memory system for Cursor using the Model Context Protocol (MCP).
+![DevContext - The Next Evolution in AI Development Context](https://i.postimg.cc/sghKLKf6/Dev-Context-banner.png)
 
 <div align="center">
   
-# 🚀 **ANNOUNCING CURSOR10X SYSTEM** 🚀
+# 🚀 **Cursor10x is now DevContext** 🚀
 
-### Transform Your Development Process with AI-Powered Autonomous Systems
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Status-Active-brightgreen" alt="Active">
-  <img src="https://img.shields.io/badge/Version-1.4.1-blue" alt="Version 1.4.1">
-  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License">
-</p>
+### Cursor10x has evolved into DevContext - A more powerful, dedicated context system for developers
 
 <table align="center">
   <tr>
-    <td align="center"><b>🧠 Memory System</b></td>
-    <td align="center"><b>📋 Task Management</b></td>
-    <td align="center"><b>🕛 Cursor Rules</b></td>
+    <td align="center"><b>🧠 Project-Centric</b></td>
+    <td align="center"><b>📊 Relationship Graphs</b></td>
+    <td align="center"><b>⚡ High Performance</b></td>
   </tr>
   <tr>
-    <td align="center">Persistent context awareness</td>
-    <td align="center">Guided implementation</td>
-    <td align="center">For top efficiency</td>
+    <td align="center">One database per project</td>
+    <td align="center">Intelligent code connections</td>
+    <td align="center">Minimal resource needs</td>
   </tr>
 </table>
 
-### 🔥 **The Cursor10x Memory System is now part of the complete Cursor10x Platform!** 🔥
+### 🔥 **DevContext takes AI development to the next level** 🔥
 
-Discover the full autonomous development ecosystem at [GitHub](https://github.com/aurda012/cursor10x) featuring:
+**🔄 Continuous Context Awareness** - Sophisticated retrieval methods focusing on what matters
+**📊 Structured Metadata** - From repository structure down to individual functions
+**🧠 Adaptive Learning** - Continuously learns from and adapts to your development patterns
+**🤖 Completely Autonomous** - Self-managing context system that works in the background
+**📚 External Documentation** - Automatically retrieves and integrates relevant documentation
+**📋 Workflow Integration** - Seamless task management workflow built-in
 
-**📋 Task Management System** - Guided implementation with step-by-step tasks
-**🔄 Autonomous Memory** - Context-aware AI that remembers your entire project
-**📊 Project Blueprints** - Complete technical architectures created for your specifications
-**📁 File/Folder Architecture** - Optimized project structure with best practices
-**📘 Implementation Guide** - Comprehensive documentation for all files and components
-**📝 Detailed Tasks** - Complete workflow from project initiation to completion
-**🔍 Vector-Based Search** - Semantic search across your codebase and conversations
-**🧩 Code Indexing** - Automatic detection and indexing of code structures
-**🔎 Semantic Code Retrieval** - Find related code by meaning rather than exact matches
-**🤖 Automatic Code Analysis** - Extract functions, classes, and variables with context
+#### 👀 **Be on the lookout** 👀
+
+The DevContext Project Generator is launching in the next couple days and will create a COMPLETE set up for your project to literally 10x your development workflow.
 
 <p align="center">
-  <a href="https://cursor10x.com" style="display: inline-block; background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">Visit cursor10x.com</a>
+  <a href="https://github.com/aurda012/devcontext" style="display: inline-block; background-color: rgba(40, 230, 210); color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s ease;">Visit DevContext Repository</a>
 </p>
 
-<i>Generate complete project blueprints with file architecture, implementation guides, and full task sequences along with the entire Cursor10x system already implemented!</i>
+<i>DevContext is a cutting-edge Model Context Protocol (MCP) server providing developers with continuous, project-centric context awareness that understands your codebase at a deeper level.</i>
 
 </div>
 
@@ -82,16 +72,19 @@ The memory system is built on four core components:
 The system implements four complementary memory types:
 
 1. **Short-Term Memory (STM)**
+
    - Stores recent messages and active files
    - Provides immediate context for current interactions
    - Automatically prioritizes by recency and importance
 
 2. **Long-Term Memory (LTM)**
+
    - Stores permanent project information like milestones and decisions
    - Maintains architectural and design context
    - Preserves high-importance information indefinitely
 
 3. **Episodic Memory**
+
    - Records chronological sequences of events
    - Maintains causal relationships between actions
    - Provides temporal context for project history
@@ -180,21 +173,24 @@ Update `.cursor/mcp.json` in your project directory with the database url and tu
 Initializes a conversation by storing the user message, generating a banner, and retrieving context in one operation. This unified tool replaces the need for separate generateBanner, getComprehensiveContext, and storeUserMessage calls at the beginning of each conversation.
 
 **Parameters:**
+
 - `content` (string, required): Content of the user message
 - `importance` (string, optional): Importance level ("low", "medium", "high", "critical"), defaults to "low"
 - `metadata` (object, optional): Additional metadata for the message
 
 **Returns:**
+
 - Object with two sections:
   - `display`: Contains the banner to be shown to the user
   - `internal`: Contains the comprehensive context for the agent's use
 
 **Example:**
+
 ```javascript
 // Initialize a conversation
 const result = await mcp_cursor10x_initConversation({
   content: "I need to implement a login system for my app",
-  importance: "medium"
+  importance: "medium",
 });
 // Result: {
 //   "status": "ok",
@@ -221,6 +217,7 @@ const result = await mcp_cursor10x_initConversation({
 Ends a conversation by combining multiple operations in one call: storing the assistant's final message, recording a milestone for what was accomplished, and logging an episode in the episodic memory. This unified tool replaces the need for separate storeAssistantMessage, storeMilestone, and recordEpisode calls at the end of each conversation.
 
 **Parameters:**
+
 - `content` (string, required): Content of the assistant's final message
 - `milestone_title` (string, required): Title of the milestone to record
 - `milestone_description` (string, required): Description of what was accomplished
@@ -228,16 +225,20 @@ Ends a conversation by combining multiple operations in one call: storing the as
 - `metadata` (object, optional): Additional metadata for all records
 
 **Returns:**
+
 - Object with status and results of each operation
 
 **Example:**
+
 ```javascript
 // End a conversation with finalization steps
 const result = await mcp_cursor10x_endConversation({
-  content: "I've implemented the authentication system with JWT tokens as requested",
+  content:
+    "I've implemented the authentication system with JWT tokens as requested",
   milestone_title: "Authentication Implementation",
-  milestone_description: "Implemented secure JWT-based authentication with refresh tokens",
-  importance: "high"
+  milestone_description:
+    "Implemented secure JWT-based authentication with refresh tokens",
+  importance: "high",
 });
 // Result: {
 //   "status": "ok",
@@ -265,12 +266,15 @@ const result = await mcp_cursor10x_endConversation({
 Checks the health of the memory system and its database connection.
 
 **Parameters:**
+
 - None required
 
 **Returns:**
+
 - Object with health status and diagnostics
 
 **Example:**
+
 ```javascript
 // Check memory system health
 const health = await mcp_cursor10x_checkHealth({});
@@ -289,12 +293,15 @@ const health = await mcp_cursor10x_checkHealth({});
 Retrieves detailed statistics about the memory system.
 
 **Parameters:**
+
 - None required
 
 **Returns:**
+
 - Object with comprehensive memory statistics
 
 **Example:**
+
 ```javascript
 // Get memory statistics
 const stats = await mcp_cursor10x_getMemoryStats({});
@@ -318,12 +325,15 @@ const stats = await mcp_cursor10x_getMemoryStats({});
 Retrieves a unified context from all memory subsystems, combining short-term, long-term, and episodic memory.
 
 **Parameters:**
+
 - None required
 
 **Returns:**
+
 - Object with consolidated context from all memory systems
 
 **Example:**
+
 ```javascript
 // Get comprehensive context
 const context = await mcp_cursor10x_getComprehensiveContext({});
@@ -357,14 +367,17 @@ const context = await mcp_cursor10x_getComprehensiveContext({});
 Stores a user message in the short-term memory system.
 
 **Parameters:**
+
 - `content` (string, required): Content of the message
 - `importance` (string, optional): Importance level ("low", "medium", "high", "critical"), defaults to "low"
 - `metadata` (object, optional): Additional metadata for the message
 
 **Returns:**
+
 - Object with status and timestamp
 
 **Example:**
+
 ```javascript
 // Store a user message
 const result = await mcp_cursor10x_storeUserMessage({
@@ -372,8 +385,8 @@ const result = await mcp_cursor10x_storeUserMessage({
   importance: "high",
   metadata: {
     topic: "authentication",
-    priority: 1
-  }
+    priority: 1,
+  },
 });
 // Result: {
 //   "status": "ok",
@@ -386,14 +399,17 @@ const result = await mcp_cursor10x_storeUserMessage({
 Stores an assistant message in the short-term memory system.
 
 **Parameters:**
+
 - `content` (string, required): Content of the message
 - `importance` (string, optional): Importance level ("low", "medium", "high", "critical"), defaults to "low"
 - `metadata` (object, optional): Additional metadata for the message
 
 **Returns:**
+
 - Object with status and timestamp
 
 **Example:**
+
 ```javascript
 // Store an assistant message
 const result = await mcp_cursor10x_storeAssistantMessage({
@@ -401,8 +417,8 @@ const result = await mcp_cursor10x_storeAssistantMessage({
   importance: "medium",
   metadata: {
     topic: "authentication",
-    contains_recommendation: true
-  }
+    contains_recommendation: true,
+  },
 });
 // Result: {
 //   "status": "ok",
@@ -415,22 +431,25 @@ const result = await mcp_cursor10x_storeAssistantMessage({
 Tracks an active file being accessed or modified by the user.
 
 **Parameters:**
+
 - `filename` (string, required): Path to the file being tracked
 - `action` (string, required): Action performed on the file (open, edit, close, etc.)
 - `metadata` (object, optional): Additional metadata for the tracking event
 
 **Returns:**
+
 - Object with status, filename, action and timestamp
 
 **Example:**
+
 ```javascript
 // Track an active file
 const result = await mcp_cursor10x_trackActiveFile({
   filename: "src/auth/jwt.js",
   action: "edit",
   metadata: {
-    changes: "Added refresh token functionality"
-  }
+    changes: "Added refresh token functionality",
+  },
 });
 // Result: {
 //   "status": "ok",
@@ -445,18 +464,21 @@ const result = await mcp_cursor10x_trackActiveFile({
 Retrieves recent messages from the short-term memory.
 
 **Parameters:**
+
 - `limit` (number, optional): Maximum number of messages to retrieve, defaults to 10
 - `importance` (string, optional): Filter by importance level
 
 **Returns:**
+
 - Object with status and array of messages
 
 **Example:**
+
 ```javascript
 // Get recent high importance messages
 const messages = await mcp_cursor10x_getRecentMessages({
   limit: 5,
-  importance: "high"
+  importance: "high",
 });
 // Result: {
 //   "status": "ok",
@@ -479,16 +501,19 @@ const messages = await mcp_cursor10x_getRecentMessages({
 Retrieves active files from the short-term memory.
 
 **Parameters:**
+
 - `limit` (number, optional): Maximum number of files to retrieve, defaults to 10
 
 **Returns:**
+
 - Object with status and array of active files
 
 **Example:**
+
 ```javascript
 // Get recent active files
 const files = await mcp_cursor10x_getActiveFiles({
-  limit: 3
+  limit: 3,
 });
 // Result: {
 //   "status": "ok",
@@ -511,25 +536,29 @@ const files = await mcp_cursor10x_getActiveFiles({
 Stores a project milestone in the long-term memory.
 
 **Parameters:**
+
 - `title` (string, required): Title of the milestone
 - `description` (string, required): Description of the milestone
 - `importance` (string, optional): Importance level, defaults to "medium"
 - `metadata` (object, optional): Additional metadata for the milestone
 
 **Returns:**
+
 - Object with status, title, and timestamp
 
 **Example:**
+
 ```javascript
 // Store a project milestone
 const result = await mcp_cursor10x_storeMilestone({
   title: "Authentication System Implementation",
-  description: "Implemented JWT authentication with refresh tokens and proper error handling",
+  description:
+    "Implemented JWT authentication with refresh tokens and proper error handling",
   importance: "high",
   metadata: {
     version: "1.0.0",
-    files_affected: ["src/auth/jwt.js", "src/middleware/auth.js"]
-  }
+    files_affected: ["src/auth/jwt.js", "src/middleware/auth.js"],
+  },
 });
 // Result: {
 //   "status": "ok",
@@ -543,6 +572,7 @@ const result = await mcp_cursor10x_storeMilestone({
 Stores a project decision in the long-term memory.
 
 **Parameters:**
+
 - `title` (string, required): Title of the decision
 - `content` (string, required): Content of the decision
 - `reasoning` (string, optional): Reasoning behind the decision
@@ -550,20 +580,23 @@ Stores a project decision in the long-term memory.
 - `metadata` (object, optional): Additional metadata for the decision
 
 **Returns:**
+
 - Object with status, title, and timestamp
 
 **Example:**
+
 ```javascript
 // Store a project decision
 const result = await mcp_cursor10x_storeDecision({
   title: "JWT for Authentication",
   content: "Use JWT tokens for API authentication with refresh token rotation",
-  reasoning: "JWTs provide stateless authentication with good security and performance characteristics",
+  reasoning:
+    "JWTs provide stateless authentication with good security and performance characteristics",
   importance: "high",
   metadata: {
     alternatives_considered: ["Session-based auth", "OAuth2"],
-    decision_date: "2023-04-15"
-  }
+    decision_date: "2023-04-15",
+  },
 });
 // Result: {
 //   "status": "ok",
@@ -577,25 +610,29 @@ const result = await mcp_cursor10x_storeDecision({
 Stores a project requirement in the long-term memory.
 
 **Parameters:**
+
 - `title` (string, required): Title of the requirement
 - `content` (string, required): Content of the requirement
 - `importance` (string, optional): Importance level, defaults to "medium"
 - `metadata` (object, optional): Additional metadata for the requirement
 
 **Returns:**
+
 - Object with status, title, and timestamp
 
 **Example:**
+
 ```javascript
 // Store a project requirement
 const result = await mcp_cursor10x_storeRequirement({
   title: "Secure Authentication",
-  content: "System must implement secure authentication with password hashing, rate limiting, and token rotation",
+  content:
+    "System must implement secure authentication with password hashing, rate limiting, and token rotation",
   importance: "critical",
   metadata: {
     source: "security audit",
-    compliance: ["OWASP Top 10", "GDPR"]
-  }
+    compliance: ["OWASP Top 10", "GDPR"],
+  },
 });
 // Result: {
 //   "status": "ok",
@@ -611,6 +648,7 @@ const result = await mcp_cursor10x_storeRequirement({
 Records an episode (action) in the episodic memory.
 
 **Parameters:**
+
 - `actor` (string, required): Actor performing the action (user, assistant, system)
 - `action` (string, required): Type of action performed
 - `content` (string, required): Content or details of the action
@@ -618,9 +656,11 @@ Records an episode (action) in the episodic memory.
 - `context` (string, optional): Context for the episode
 
 **Returns:**
+
 - Object with status, actor, action, and timestamp
 
 **Example:**
+
 ```javascript
 // Record an episode
 const result = await mcp_cursor10x_recordEpisode({
@@ -628,7 +668,7 @@ const result = await mcp_cursor10x_recordEpisode({
   action: "implementation",
   content: "Created JWT authentication middleware with token verification",
   importance: "medium",
-  context: "authentication"
+  context: "authentication",
 });
 // Result: {
 //   "status": "ok",
@@ -643,18 +683,21 @@ const result = await mcp_cursor10x_recordEpisode({
 Retrieves recent episodes from the episodic memory.
 
 **Parameters:**
+
 - `limit` (number, optional): Maximum number of episodes to retrieve, defaults to 10
 - `context` (string, optional): Filter by context
 
 **Returns:**
+
 - Object with status and array of episodes
 
 **Example:**
+
 ```javascript
 // Get recent episodes in the authentication context
 const episodes = await mcp_cursor10x_getRecentEpisodes({
   limit: 5,
-  context: "authentication"
+  context: "authentication",
 });
 // Result: {
 //   "status": "ok",
@@ -680,6 +723,7 @@ const episodes = await mcp_cursor10x_getRecentEpisodes({
 Unified tool for managing vector embeddings with operations for store, search, update, and delete.
 
 **Parameters:**
+
 - `operation` (string, required): Operation to perform ("store", "search", "update", "delete")
 - `contentId` (number, optional): ID of the content this vector represents (for store, update, delete)
 - `contentType` (string, optional): Type of content ("message", "file", "snippet", etc.)
@@ -690,9 +734,11 @@ Unified tool for managing vector embeddings with operations for store, search, u
 - `metadata` (object, optional): Additional info about the vector
 
 **Returns:**
+
 - Object with status and operation results
 
 **Example:**
+
 ```javascript
 // Store a vector embedding
 const result = await mcp_cursor10x_manageVector({
@@ -741,6 +787,7 @@ const searchResult = await mcp_cursor10x_manageVector({
 The memory system automatically creates and maintains the following database tables:
 
 - `messages`: Stores user and assistant messages
+
   - `id`: Unique identifier
   - `timestamp`: Creation timestamp
   - `role`: Message role (user/assistant)
@@ -749,12 +796,14 @@ The memory system automatically creates and maintains the following database tab
   - `archived`: Whether the message is archived
 
 - `active_files`: Tracks file activity
+
   - `id`: Unique identifier
   - `filename`: Path to the file
   - `action`: Last action performed
   - `last_accessed`: Timestamp of last access
 
 - `milestones`: Records project milestones
+
   - `id`: Unique identifier
   - `title`: Milestone title
   - `description`: Detailed description
@@ -762,6 +811,7 @@ The memory system automatically creates and maintains the following database tab
   - `importance`: Importance level
 
 - `decisions`: Stores project decisions
+
   - `id`: Unique identifier
   - `title`: Decision title
   - `content`: Decision content
@@ -770,6 +820,7 @@ The memory system automatically creates and maintains the following database tab
   - `importance`: Importance level
 
 - `requirements`: Maintains project requirements
+
   - `id`: Unique identifier
   - `title`: Requirement title
   - `content`: Requirement content
@@ -777,6 +828,7 @@ The memory system automatically creates and maintains the following database tab
   - `importance`: Importance level
 
 - `episodes`: Chronicles actions and events
+
   - `id`: Unique identifier
   - `timestamp`: Creation timestamp
   - `actor`: Actor performing the action
@@ -786,6 +838,7 @@ The memory system automatically creates and maintains the following database tab
   - `context`: Action context
 
 - `vectors`: Stores vector embeddings for semantic search
+
   - `id`: Unique identifier
   - `content_id`: ID of the referenced content
   - `content_type`: Type of content (message, file, snippet)
@@ -793,6 +846,7 @@ The memory system automatically creates and maintains the following database tab
   - `metadata`: Additional metadata for the vector
 
 - `code_files`: Tracks indexed code files
+
   - `id`: Unique identifier
   - `file_path`: Path to the file
   - `language`: Programming language
@@ -816,7 +870,7 @@ The memory system automatically creates and maintains the following database tab
 // This replaces the need for three separate calls at the start of the conversation
 const result = await mcp_cursor10x_initConversation({
   content: "I need help implementing authentication in my React app",
-  importance: "high"
+  importance: "high",
 });
 
 // Display the banner to the user
@@ -831,16 +885,16 @@ const context = result.internal.context;
 
 ```javascript
 // Generate a memory banner at the start
-mcp_cursor10x_generateBanner({})
+mcp_cursor10x_generateBanner({});
 
 // Get comprehensive context
-mcp_cursor10x_getComprehensiveContext({})
+mcp_cursor10x_getComprehensiveContext({});
 
 // Store the user message
 mcp_cursor10x_storeUserMessage({
   content: "I need help with authentication",
-  importance: "high"
-})
+  importance: "high",
+});
 ```
 
 ### Tracking User Activity
@@ -849,7 +903,7 @@ mcp_cursor10x_storeUserMessage({
 // Track an active file
 await mcp_cursor10x_trackActiveFile({
   filename: "src/auth/jwt.js",
-  action: "edit"
+  action: "edit",
 });
 ```
 
@@ -858,11 +912,13 @@ await mcp_cursor10x_trackActiveFile({
 ### Common Issues
 
 1. **Database Connection Problems**
+
    - Verify your Turso database URL and authentication token are correct
    - Check network connectivity to the Turso service
    - Verify firewall settings allow the connection
 
 2. **Missing Data**
+
    - Check that data was stored with appropriate importance level
    - Verify the retrieval query parameters (limit, filters)
    - Check the database health with `mcp_cursor10x_checkHealth()`
@@ -875,12 +931,14 @@ await mcp_cursor10x_trackActiveFile({
 ### Diagnostic Steps
 
 1. Check system health:
+
    ```javascript
    const health = await mcp_cursor10x_checkHealth({});
    console.log("System Health:", health);
    ```
 
 2. Verify memory statistics:
+
    ```javascript
    const stats = await mcp_cursor10x_getMemoryStats({});
    console.log("Memory Stats:", stats);
