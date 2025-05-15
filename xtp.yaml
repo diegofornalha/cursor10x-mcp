@@ -1,0 +1,44 @@
+name: cursor10x-mcp
+description: Sistema de memória persistente para assistentes AI usando MCP
+version: 1.0.0
+main: xtp-plugin-config.js
+type: module
+
+runtime:
+  nodejs:
+    version: "18"
+
+environment:
+  TURSO_DATABASE_URL:
+    description: "URL do banco de dados Turso (libsql:// ou file://)"
+    required: true
+  TURSO_AUTH_TOKEN:
+    description: "Token de autenticação para o banco de dados Turso (não necessário para bancos locais)"
+    required: false
+  VECTOR_DIMENSIONS:
+    description: "Dimensões dos vetores de embeddings"
+    default: "128"
+  VECTOR_VACUUM:
+    description: "Executar VACUUM no banco de dados para otimizar espaço"
+    default: "true"
+
+dependencies:
+  - "@libsql/client"
+  - "@modelcontextprotocol/sdk"
+  - "dotenv"
+
+extension_points:
+  - id: "ext_01je4jj1tteaktf0zd0anm8854"
+    feature: "cursor10x-memory"
+
+metadata:
+  author: Diego Fornalha
+  repository: "https://github.com/aurda012/cursor10x-mcp"
+  tags:
+    - memory
+    - context
+    - cursor
+    - claude
+    - ai
+    - mcp
+    - persistence

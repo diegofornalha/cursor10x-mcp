@@ -670,9 +670,6 @@ NODE_ENV: ${process.env.NODE_ENV || 'not set'}
 TURSO_DATABASE_URL: ${process.env.TURSO_DATABASE_URL ? (process.env.TURSO_DATABASE_URL.substring(0, 15) + "...") : 'not set'}
 TURSO_AUTH_TOKEN: ${process.env.TURSO_AUTH_TOKEN ? "provided" : 'not set'}`);
 
-// Database-related code - Turso Adapter implementation
-let debugLogging = process.env.LOG_LEVEL === "debug";
-
 /**
  * Log database operations when in debug mode
  * @param {string} message - The message to log
