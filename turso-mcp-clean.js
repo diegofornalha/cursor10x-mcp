@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 
+// Suprimir mensagens do dotenv
+const originalLog = console.log;
+console.log = function() {};
+
 const { createClient } = require("@libsql/client");
 const dotenv = require("dotenv");
 
-// Carregar variáveis de ambiente
+// Restaurar console.log após dotenv
 dotenv.config();
+console.log = originalLog;
 
 // Configuração do cliente Turso
 let tursoClient = null;
