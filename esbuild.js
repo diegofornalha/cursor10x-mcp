@@ -9,4 +9,6 @@ esbuild
     minify: false, // might want to use true for production build
     format: 'cjs', // needs to be CJS for now
     target: ['es2020'], // don't go over es2020 because quickjs doesn't support it
+    platform: 'node', // Add Node.js platform support
+    external: ['path', 'os', 'crypto', 'fs'], // External Node.js modules
   })

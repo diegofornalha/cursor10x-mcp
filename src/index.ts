@@ -2,11 +2,11 @@ import * as main from "./main";
 
 import { CallToolRequest, CallToolResult, ListToolsResult } from "./pdk";
 
-export function call(): number {
+export async function call(): Promise<number> {
   const untypedInput = JSON.parse(Host.inputString());
   const input = CallToolRequest.fromJson(untypedInput);
 
-  const output = main.callImpl(input);
+  const output = await main.callImpl(input);
 
   const untypedOutput = CallToolResult.toJson(output);
   Host.outputString(JSON.stringify(untypedOutput));
